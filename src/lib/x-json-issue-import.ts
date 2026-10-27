@@ -137,7 +137,7 @@ function importIssueBody(
 	dryRun: boolean,
 ): XJsonImportResult {
 	const payload = unwrapMarkdownJsonFence(body);
-	if (dryRun) return validateXJsonText(payload);
+	if (dryRun) return validateXJsonText(payload, db ?? undefined);
 	if (!db) {
 		throw new Error("database is required for non-dry-run x-json issue import");
 	}
