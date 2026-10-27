@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
 import { ensureBirdclawDirs, getBirdclawPaths } from "./config";
+import {
+	parseGithubRepo,
+	requireLaunchdAuthors,
+	resolveGhExecutable,
+} from "./x-json-issue-import";
 import { runEffectPromise, tryPromise, trySync } from "./effect-runtime";
 import {
 	buildLaunchAgent,
@@ -72,11 +77,8 @@ function buildProgramArguments({
 export function buildXJsonIssuesLaunchAgentPlist(
 	options: XJsonIssuesLaunchAgentOptions,
 ) {
-	if (!options.repo?.trim()) {
-		throw new Error(
-			"--repo is required to build the x-json-issues LaunchAgent",
-		);
-	}
+	const repo = parseGithubRepo(options.repo);
+	requireLaunchdAuthors(options.authors);
 	const label = options.label ?? DEFAULT_X_JSON_ISSUES_LAUNCHD_LABEL;
 	const intervalSeconds =
 		options.intervalSeconds ?? DEFAULT_X_JSON_ISSUES_INTERVAL_SECONDS;
@@ -90,7 +92,13 @@ export function buildXJsonIssuesLaunchAgentPlist(
 	const stderrPath = resolveUserPath(
 		options.stderrPath ?? getDefaultXJsonIssuesStderrPath(),
 	);
-	const programArguments = buildProgramArguments({ ...options, logPath });
+	const programArguments = buildProgramArguments({ ...options, repo, logPath });
+	const birdclawHome = getBirdclawPaths().rootDir;
+	const ghExecutable = resolveGhExecutable(options.ghPath);
+	const environmentVariables: Record<string, string> = {
+		BIRDCLAW_HOME: birdclawHome,
+		BIRDCLAW_GH_PATH: ghExecutable,
+	};
 	return buildLaunchAgent({
 		label,
 		intervalSeconds,
@@ -99,6 +107,7 @@ export function buildXJsonIssuesLaunchAgentPlist(
 		stderrPath,
 		programArguments,
 		envFile: options.envFile,
+		environmentVariables,
 	});
 }
 
@@ -140,19 +149,17 @@ export function uninstallXJsonIssuesLaunchAgentEffect({
 			launchAgentsDir ?? "~/Library/LaunchAgents",
 		);
 		const plistPath = path.join(resolvedDir, `${label}.plist`);
-		let unloaded = false;
-		yield* runSubprocessEffect({
+		const unloaded = yield* runSubprocessEffect({
 			command: "launchctl",
 			args: ["unload", plistPath],
-		}).pipe(Effect.catchAll(() => Effect.void));
-		unloaded = true;
-		let removed = false;
-		try {
-			yield* tryPromise(() => fs.unlink(plistPath));
-			removed = true;
-		} catch {
-			removed = false;
-		}
+		}).pipe(
+			Effect.map(() => true),
+			Effect.catchAll(() => Effect.succeed(false)),
+		);
+		const removed = yield* tryPromise(() => fs.unlink(plistPath)).pipe(
+			Effect.map(() => true),
+			Effect.catchAll(() => Effect.succeed(false)),
+		);
 		return { ok: true, label, plistPath, unloaded, removed };
 	});
 }

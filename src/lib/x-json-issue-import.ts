@@ -8,6 +8,7 @@ import {
 } from "./x-json-import";
 
 export const X_JSON_IMPORT_FAILED_LABEL = "import-failed";
+export const DEFAULT_GH_ISSUE_LIST_LIMIT = 100;
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
@@ -80,6 +81,31 @@ export function parseGithubRepo(repo: string) {
 	return trimmed;
 }
 
+export function resolveImportAuthorPolicy(options: {
+	authors?: readonly string[];
+	anyAuthor?: boolean;
+}) {
+	if (options.anyAuthor) {
+		return { allowedAuthors: undefined as string[] | undefined };
+	}
+	const authors = options.authors ?? [];
+	if (authors.length === 0) {
+		throw new Error(
+			"Pass at least one --author or use --any-author to import issues from any opener",
+		);
+	}
+	return { allowedAuthors: [...authors] };
+}
+
+export function requireLaunchdAuthors(authors?: readonly string[]) {
+	if (!authors || authors.length === 0) {
+		throw new Error(
+			"--author is required for install-x-json-issues-launchd (repeatable)",
+		);
+	}
+	return [...authors];
+}
+
 function normalizeAuthorLogin(login: string) {
 	return login.trim().toLowerCase();
 }
@@ -106,16 +132,20 @@ function formatImportComment(result: XJsonImportResult) {
 }
 
 function importIssueBody(
-	db: Database,
+	db: Database | null,
 	body: string,
 	dryRun: boolean,
 ): XJsonImportResult {
 	const payload = unwrapMarkdownJsonFence(body);
-	return dryRun ? validateXJsonText(payload) : importXJsonText(db, payload);
+	if (dryRun) return validateXJsonText(payload);
+	if (!db) {
+		throw new Error("database is required for non-dry-run x-json issue import");
+	}
+	return importXJsonText(db, payload);
 }
 
 export async function importXJsonIssuesEffect(
-	db: Database,
+	db: Database | null,
 	options: XJsonIssuesImportOptions,
 	gh: GhIssueRunner,
 ): Promise<XJsonIssuesImportSummary> {
@@ -172,8 +202,12 @@ export async function importXJsonIssuesEffect(
 	return { ok, repo, dryRun, issues };
 }
 
-export function createGhIssueRunner(ghPath: string): GhIssueRunner {
+export function createGhIssueRunner(
+	ghPath?: string,
+	options: { limit?: number } = {},
+): GhIssueRunner {
 	const resolvedGh = resolveGhExecutable(ghPath);
+	const limit = options.limit ?? DEFAULT_GH_ISSUE_LIST_LIMIT;
 
 	async function runGhJson(args: readonly string[]) {
 		const result = await runSubprocess({
@@ -195,6 +229,8 @@ export function createGhIssueRunner(ghPath: string): GhIssueRunner {
 				repo,
 				"--state",
 				"open",
+				"--limit",
+				String(limit),
 				"--json",
 				"number,title,body,author,labels",
 			]);
