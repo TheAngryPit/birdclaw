@@ -253,21 +253,52 @@ function tweetExists(db: Database, tweetId: string) {
 	);
 }
 
-export function importXJsonText(
-	db: Database,
-	input: string,
-): XJsonImportResult {
+export function unwrapMarkdownJsonFence(body: string) {
+	const trimmed = body.trim();
+	const fenced = trimmed.match(
+		/^```(?:jsonl|json)\s*\r?\n([\s\S]*?)\r?\n```\s*$/i,
+	);
+	if (fenced?.[1]) return fenced[1].trim();
+	return trimmed;
+}
+
+function validateDocuments(input: string): {
+	documents: Array<{ line: number; raw: unknown }>;
+	result: XJsonImportResult;
+} {
 	const result: XJsonImportResult = { imported: 0, skipped: 0, errors: [] };
-	let documents: Array<{ line: number; raw: unknown }>;
 	try {
 		const split = splitInputDocuments(input);
-		documents = split.documents;
 		result.errors.push(...split.errors);
+		return { documents: split.documents, result };
 	} catch (error) {
 		result.errors.push({
 			line: 1,
 			message: error instanceof Error ? error.message : String(error),
 		});
+		return { documents: [], result };
+	}
+}
+
+export function validateXJsonText(input: string): XJsonImportResult {
+	const { documents, result } = validateDocuments(input);
+	for (const document of documents) {
+		const normalized = normalizeDocument(document.raw, document.line);
+		if ("error" in normalized) {
+			result.errors.push({ line: document.line, message: normalized.error });
+			continue;
+		}
+		result.imported += normalized.payload.data.length;
+	}
+	return result;
+}
+
+export function importXJsonText(
+	db: Database,
+	input: string,
+): XJsonImportResult {
+	const { documents, result } = validateDocuments(input);
+	if (documents.length === 0) {
 		return result;
 	}
 

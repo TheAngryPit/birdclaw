@@ -21,10 +21,19 @@ import {
 	importTweetsViaFxTwitter,
 } from "#/lib/fxtwitter";
 import { hydrateProfilesFromX } from "#/lib/profile-hydration";
+import {
+	createGhIssueRunner,
+	importXJsonIssuesEffect,
+	parseGithubRepo,
+} from "#/lib/x-json-issue-import";
 import { importXJsonFromPath } from "#/lib/x-json-import";
 import { getQueryEnvelope } from "#/lib/query-status";
 import { seedDemoData } from "#/lib/seed";
 import { printError, type CliCommandContext } from "./command-context";
+
+function collectAuthorLogin(login: string, previous: string[]) {
+	return [...previous, login];
+}
 
 const IMPORT_SLICE_LABELS: Record<ImportProgressSlice, string> = {
 	tweets: "tweets",
@@ -374,6 +383,47 @@ export function registerCoreCommands({
 			await autoSyncAfterWrite();
 			print(result, asJson());
 			if (result.errors.length > 0) {
+				process.exitCode = 1;
+			}
+		});
+	importCommand
+		.command("x-json-issues")
+		.description(
+			"Import Grok Bot tweet JSON from open GitHub issues in a private inbox repo",
+		)
+		.requiredOption("--repo <repo>", "GitHub repository (owner/name)")
+		.option(
+			"--author <login>",
+			"Only import issues opened by this GitHub login (repeatable)",
+			collectAuthorLogin,
+			[],
+		)
+		.option(
+			"--gh <path>",
+			"gh executable (default: BIRDCLAW_GH_PATH or gh on PATH)",
+		)
+		.option(
+			"--dry-run",
+			"Validate issue bodies without writing to the DB or GitHub",
+		)
+		.action(async (options) => {
+			const repo = parseGithubRepo(options.repo);
+			const db = getNativeDb({ seedDemoData: false });
+			const gh = createGhIssueRunner(options.gh);
+			const summary = await importXJsonIssuesEffect(
+				db,
+				{
+					repo,
+					allowedAuthors: options.author,
+					dryRun: Boolean(options.dryRun),
+				},
+				gh,
+			);
+			if (!options.dryRun) {
+				await autoSyncAfterWrite();
+			}
+			print(summary, asJson());
+			if (!summary.ok) {
 				process.exitCode = 1;
 			}
 		});
