@@ -67,6 +67,25 @@ describe("x-json-issues launchd", () => {
 		).toThrow("--author is required");
 	});
 
+	it("pins bun runtime and source program in program arguments", () => {
+		process.env.BIRDCLAW_HOME = makeTempDir("birdclaw-x-json-issues-home-");
+		resetBirdclawPathsForTests();
+		const agent = buildXJsonIssuesLaunchAgentPlist({
+			repo: "synth-org/synth-inbox",
+			authors: ["synth_bot_a"],
+			runtime: "/tmp/bun-canary/bin/bun",
+			runtimeArgs: ["--no-env-file"],
+			program: "/tmp/birdclaw/bin/birdclaw.mjs",
+		});
+		expect(agent.programArguments.slice(0, 4)).toEqual([
+			"/tmp/bun-canary/bin/bun",
+			"--no-env-file",
+			"/tmp/birdclaw/bin/birdclaw.mjs",
+			"--json",
+		]);
+		expect(agent.programArguments).toContain("x-json-issues");
+	});
+
 	it("validates --repo like the import command", () => {
 		process.env.BIRDCLAW_HOME = makeTempDir("birdclaw-x-json-issues-home-");
 		resetBirdclawPathsForTests();

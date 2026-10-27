@@ -411,7 +411,7 @@ export function registerCoreCommands({
 		)
 		.option(
 			"--limit <n>",
-			"Maximum open issues to fetch from GitHub",
+			"Maximum open issues to fetch from GitHub (positive integer)",
 			String(DEFAULT_GH_ISSUE_LIST_LIMIT),
 		)
 		.option(
@@ -426,12 +426,12 @@ export function registerCoreCommands({
 			});
 			const limit = parsePositiveIntegerOption(options.limit, "--limit");
 			const dryRun = Boolean(options.dryRun);
-			const db = dryRun ? null : getNativeDb({ seedDemoData: false });
 			if (!dryRun && !isBirdclawHomeInitialized()) {
 				throw new Error(
 					"Birdclaw home is not initialized. Run `birdclaw init` before importing issues.",
 				);
 			}
+			const db = dryRun ? null : getNativeDb({ seedDemoData: false });
 			const gh = createGhIssueRunner(options.gh, { limit });
 			const summary = await importXJsonIssuesEffect(
 				db,

@@ -19,6 +19,31 @@ import { uninstallXJsonIssuesLaunchAgentEffect } from "./x-json-issues-job";
 
 const runSubprocessMock = vi.hoisted(() => vi.fn());
 const runSubprocessEffectMock = vi.hoisted(() => vi.fn());
+const ghRunnerMocks = vi.hoisted(() => ({
+	useRealGhRunner: false,
+	listOpenIssues: vi.fn(async () => [] as GhIssue[]),
+	createComment: vi.fn(async () => {}),
+	closeIssue: vi.fn(async () => {}),
+	addLabel: vi.fn(async () => {}),
+}));
+
+vi.mock("./x-json-issue-import", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./x-json-issue-import")>();
+	return {
+		...actual,
+		createGhIssueRunner: (ghPath?: string, options?: { limit?: number }) => {
+			if (ghRunnerMocks.useRealGhRunner) {
+				return actual.createGhIssueRunner(ghPath, options);
+			}
+			return {
+				listOpenIssues: ghRunnerMocks.listOpenIssues,
+				createComment: ghRunnerMocks.createComment,
+				closeIssue: ghRunnerMocks.closeIssue,
+				addLabel: ghRunnerMocks.addLabel,
+			};
+		},
+	};
+});
 
 vi.mock("./subprocess", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./subprocess")>();
@@ -34,6 +59,11 @@ const tempDirs: string[] = [];
 afterEach(() => {
 	runSubprocessMock.mockReset();
 	runSubprocessEffectMock.mockReset();
+	ghRunnerMocks.listOpenIssues.mockClear();
+	ghRunnerMocks.createComment.mockClear();
+	ghRunnerMocks.closeIssue.mockClear();
+	ghRunnerMocks.addLabel.mockClear();
+	ghRunnerMocks.useRealGhRunner = false;
 	for (const directory of tempDirs.splice(0)) {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -76,6 +106,7 @@ describe("x-json issue import hardening", () => {
 	});
 
 	it("passes --limit to gh issue list", async () => {
+		ghRunnerMocks.useRealGhRunner = true;
 		runSubprocessMock.mockResolvedValue({
 			stdout: "[]",
 			stderr: "",
@@ -98,6 +129,29 @@ describe("x-json issue import hardening", () => {
 			new EmptyGhRunner(),
 		);
 		expect(existsSync(path.join(home, "birdclaw.sqlite"))).toBe(false);
+	});
+
+	it("real import on an uninitialized home fails without DB or gh mutations", async () => {
+		const home = makeHome();
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		process.exitCode = 0;
+		await runCliMain([
+			"node",
+			"birdclaw",
+			"import",
+			"x-json-issues",
+			"--repo",
+			"synth-org/synth-inbox",
+			"--any-author",
+			"--json",
+		]);
+		error.mockRestore();
+		expect(process.exitCode).toBe(1);
+		expect(existsSync(path.join(home, "birdclaw.sqlite"))).toBe(false);
+		expect(ghRunnerMocks.listOpenIssues).not.toHaveBeenCalled();
+		expect(ghRunnerMocks.createComment).not.toHaveBeenCalled();
+		expect(ghRunnerMocks.closeIssue).not.toHaveBeenCalled();
+		expect(ghRunnerMocks.addLabel).not.toHaveBeenCalled();
 	});
 
 	it("dry-run CLI does not create a database in an uninitialized home", async () => {

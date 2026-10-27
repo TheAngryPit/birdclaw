@@ -65,7 +65,7 @@ git clone https://github.com/TheAngryPit/birdclaw.git
 cd birdclaw
 ./scripts/bun-canary.sh install --frozen-lockfile
 ./scripts/bun-canary.sh run --bun build
-./scripts/bun-canary.sh bin/birdclaw.mjs --version
+test -f bin/birdclaw.mjs
 ```
 
 Use `./scripts/bun-canary.sh bin/birdclaw.mjs …` (or `bin/birdclaw.mjs` after `build`) instead of `/opt/homebrew/bin/birdclaw` when testing inbox import or installing its LaunchAgent.
@@ -82,15 +82,22 @@ export BIRDCLAW_HOME="$HOME/tmp/birdclaw-scratch"
 Optional `BIRDCLAW_GH_PATH` or `--gh /path/to/gh` selects the GitHub CLI binary (useful under launchd). Install a periodic LaunchAgent (manual step; nothing auto-installs):
 
 ```bash
+BUN=$(./scripts/install-bun-canary.sh)
 ./scripts/bun-canary.sh bin/birdclaw.mjs jobs install-x-json-issues-launchd \
   --repo YOUR_ORG/YOUR_INBOX \
   --author YOUR_GITHUB_LOGIN \
+  --runtime "$BUN" \
+  --runtime-arg=--no-env-file \
+  --program "$PWD/bin/birdclaw.mjs" \
   --gh "$(command -v gh)" \
   --interval-seconds 900 \
   --print-plist
 ./scripts/bun-canary.sh bin/birdclaw.mjs jobs install-x-json-issues-launchd \
   --repo YOUR_ORG/YOUR_INBOX \
   --author YOUR_GITHUB_LOGIN \
+  --runtime "$BUN" \
+  --runtime-arg=--no-env-file \
+  --program "$PWD/bin/birdclaw.mjs" \
   --gh "$(command -v gh)" \
   --no-load
 ./scripts/bun-canary.sh bin/birdclaw.mjs jobs x-json-issues-launchd-status --json
