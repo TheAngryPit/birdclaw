@@ -47,6 +47,13 @@ The FxTwitter transport supports named public tweet, author-thread, conversation
 
 Import offline X API v2 tweet responses (the `XurlTweetsResponse` shape) without network access or credentials. Each document may use `data` as one tweet object or an array; optional per-tweet `url` values are stored as `tweet_sources` provenance for `source = 'grokbot'`.
 
+Optional document-level fields align imports with `birdclaw sync` membership on your own account (not the legacy `public` home path):
+
+- `kind`: `home`, `bookmark`, `like`, `mention`, or `authored`. When omitted, behavior is unchanged: tweets land on the `public` account with a `home` edge (existing GitHub inbox issues keep working).
+- `account`: handle or account id. When `kind` is set, Birdclaw resolves the owning account the same way sync does (`resolveLiveSyncAccount` / default account). Unknown accounts fail with a clear error.
+
+Grok Bot tool JSON is normalized before ingest: `includes.posts` → `includes.tweets`, `edit_history_post_ids` → `edit_history_tweet_ids`, `public_metrics.repost_count` → `retweet_count`, and per-tweet `url` stays provenance. Edges and collections use the same `ingestTweetPayload` paths as live sync (`home` / `mention` / `authored` edges; `bookmarks` / `likes` collections).
+
 ```bash
 birdclaw import x-json ./exports/grok-tweets.jsonl --json
 cat grok-tweets.jsonl | birdclaw import x-json - --json
@@ -56,7 +63,7 @@ The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are re
 
 ## Grok Bot GitHub issue inbox (Mac)
 
-Grok Bots can file tweet JSON into a **private** GitHub repository (one issue per batch). On a Mac with `gh` already authenticated, Birdclaw can poll that inbox, import each open issue body through the same `x-json` path, comment `{ imported, skipped, errors }` on the issue, and close it only when `errors` is empty. Failed imports stay open, receive a comment, and get the `import-failed` label so they are not retried forever.
+Grok Bots can file tweet JSON into a **private** GitHub repository (one issue per batch). Issue bodies may include the same optional `kind` and `account` fields at the JSON root (inside the fenced block). On a Mac with `gh` already authenticated, Birdclaw can poll that inbox, import each open issue body through the same `x-json` path, comment `{ imported, skipped, errors }` on the issue, and close it only when `errors` is empty. Failed imports stay open, receive a comment, and get the `import-failed` label so they are not retried forever.
 
 Homebrew/npm `birdclaw` builds from upstream and will not include fork-only inbox commands until they are released there. On a Mac, run this fork from a source checkout (same path as other scheduled jobs in `docs/jobs.md`):
 

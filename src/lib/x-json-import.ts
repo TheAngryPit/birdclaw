@@ -1,4 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { resolveLiveSyncAccount } from "./live-sync-engine";
+import type { TimelineCollectionKind } from "./api-enums";
+import type { TweetAccountEdgeKind } from "./tweet-account-edges";
 import type { Database } from "./sqlite";
 import { ingestTweetPayload } from "./tweet-repository";
 import type {
@@ -11,6 +14,20 @@ import type {
 const TWEET_ID_PATTERN = /^\d{1,20}$/;
 const GROKBOT_SOURCE = "grokbot";
 const PUBLIC_ACCOUNT_ID = "public";
+
+export const X_JSON_IMPORT_KINDS = [
+	"home",
+	"bookmark",
+	"like",
+	"mention",
+	"authored",
+] as const;
+export type XJsonImportKind = (typeof X_JSON_IMPORT_KINDS)[number];
+
+interface XJsonDocumentMetadata {
+	kind?: XJsonImportKind;
+	account?: string;
+}
 
 export interface XJsonImportError {
 	line: number;
@@ -44,6 +61,23 @@ function readStringField(
 	return value.trim();
 }
 
+function normalizeBotTweetFields(record: JsonRecord) {
+	if (
+		Array.isArray(record.edit_history_post_ids) &&
+		record.edit_history_tweet_ids === undefined
+	) {
+		record.edit_history_tweet_ids = record.edit_history_post_ids;
+		delete record.edit_history_post_ids;
+	}
+	const metrics = record.public_metrics;
+	if (isRecord(metrics) && metrics.repost_count !== undefined) {
+		if (metrics.retweet_count === undefined) {
+			metrics.retweet_count = metrics.repost_count;
+		}
+		delete metrics.repost_count;
+	}
+}
+
 function normalizeTweetData(
 	value: unknown,
 	line: number,
@@ -51,6 +85,7 @@ function normalizeTweetData(
 	if (!isRecord(value)) {
 		return { error: `Line ${String(line)}: each data tweet must be an object` };
 	}
+	normalizeBotTweetFields(value);
 	const sourceUrl =
 		typeof value.url === "string" && value.url.trim().length > 0
 			? value.url.trim()
@@ -124,14 +159,15 @@ function normalizeIncludes(
 		}
 		includes.users = users;
 	}
-	if (value.tweets !== undefined) {
-		if (!Array.isArray(value.tweets)) {
+	const nestedTweets = value.tweets ?? value.posts;
+	if (nestedTweets !== undefined) {
+		if (!Array.isArray(nestedTweets)) {
 			return {
 				error: `Line ${String(line)}: includes.tweets must be an array`,
 			};
 		}
 		const tweets: XurlTweetData[] = [];
-		for (const tweet of value.tweets) {
+		for (const tweet of nestedTweets) {
 			const normalized = normalizeTweetData(tweet, line);
 			if ("error" in normalized) return normalized;
 			tweets.push(normalized.tweet);
@@ -161,6 +197,91 @@ function normalizeIncludes(
 		includes.media = value.media as XurlMedia[];
 	}
 	return includes;
+}
+
+function parseImportKind(
+	value: unknown,
+	line: number,
+): XJsonImportKind | undefined | { error: string } {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") {
+		return { error: `Line ${String(line)}: kind must be a string` };
+	}
+	const normalized = value.trim().toLowerCase();
+	if (!X_JSON_IMPORT_KINDS.includes(normalized as XJsonImportKind)) {
+		return {
+			error: `Line ${String(line)}: kind must be one of ${X_JSON_IMPORT_KINDS.join(", ")}`,
+		};
+	}
+	return normalized as XJsonImportKind;
+}
+
+function extractDocumentMetadata(
+	raw: JsonRecord,
+	line: number,
+): { metadata: XJsonDocumentMetadata; body: JsonRecord } | { error: string } {
+	const parsedKind = parseImportKind(raw.kind, line);
+	if (
+		parsedKind !== undefined &&
+		typeof parsedKind === "object" &&
+		"error" in parsedKind
+	) {
+		return parsedKind;
+	}
+	const kind = typeof parsedKind === "string" ? parsedKind : undefined;
+	let account: string | undefined;
+	if (raw.account !== undefined) {
+		if (typeof raw.account !== "string" || raw.account.trim().length === 0) {
+			return {
+				error: `Line ${String(line)}: account must be a non-empty string`,
+			};
+		}
+		account = raw.account.trim();
+	}
+	const { kind: _kind, account: _account, ...body } = raw;
+	return {
+		metadata: { ...(kind ? { kind } : {}), ...(account ? { account } : {}) },
+		body,
+	};
+}
+
+function resolveImportAccountId(
+	db: Database,
+	metadata: XJsonDocumentMetadata,
+	line: number,
+): string | { error: string } {
+	if (!metadata.kind) {
+		ensurePublicImportAccount(db);
+		return PUBLIC_ACCOUNT_ID;
+	}
+	try {
+		return resolveLiveSyncAccount(db, metadata.account).accountId;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { error: `Line ${String(line)}: ${message}` };
+	}
+}
+
+function ingestOptionsForKind(kind: XJsonImportKind): {
+	edgeKind?: TweetAccountEdgeKind;
+	collectionKind?: TimelineCollectionKind;
+} {
+	switch (kind) {
+		case "home":
+			return { edgeKind: "home" };
+		case "mention":
+			return { edgeKind: "mention" };
+		case "authored":
+			return { edgeKind: "authored" };
+		case "bookmark":
+			return { collectionKind: "bookmarks" };
+		case "like":
+			return { collectionKind: "likes" };
+		default: {
+			const _exhaustive: never = kind;
+			return _exhaustive;
+		}
+	}
 }
 
 function normalizeDocument(
@@ -280,15 +401,80 @@ function validateDocuments(input: string): {
 	}
 }
 
-export function validateXJsonText(input: string): XJsonImportResult {
+function processDocument(
+	db: Database | undefined,
+	document: { line: number; raw: unknown },
+	result: XJsonImportResult,
+	mode: "validate" | "import",
+) {
+	if (!isRecord(document.raw)) {
+		result.errors.push({
+			line: document.line,
+			message: `Line ${String(document.line)}: expected a JSON object`,
+		});
+		return;
+	}
+	const extracted = extractDocumentMetadata(document.raw, document.line);
+	if ("error" in extracted) {
+		result.errors.push({ line: document.line, message: extracted.error });
+		return;
+	}
+	if (extracted.metadata.kind && !db) {
+		result.errors.push({
+			line: document.line,
+			message: `Line ${String(document.line)}: kind requires an initialized database to resolve account`,
+		});
+		return;
+	}
+	const accountId = db
+		? resolveImportAccountId(db, extracted.metadata, document.line)
+		: PUBLIC_ACCOUNT_ID;
+	if (typeof accountId !== "string") {
+		result.errors.push({ line: document.line, message: accountId.error });
+		return;
+	}
+	const normalized = normalizeDocument(extracted.body, document.line);
+	if ("error" in normalized) {
+		result.errors.push({ line: document.line, message: normalized.error });
+		return;
+	}
+	const primaryIds = normalized.payload.data.map((tweet) => tweet.id);
+	if (mode === "validate") {
+		result.imported += primaryIds.length;
+		return;
+	}
+	const existingCount = primaryIds.filter((id) => tweetExists(db!, id)).length;
+	const newCount = primaryIds.length - existingCount;
+	result.skipped += existingCount;
+	result.imported += newCount;
+
+	const membership = extracted.metadata.kind
+		? ingestOptionsForKind(extracted.metadata.kind)
+		: { edgeKind: "home" as const };
+
+	db!.transaction(() => {
+		ingestTweetPayload(db!, {
+			accountId,
+			payload: normalized.payload,
+			source: GROKBOT_SOURCE,
+			...membership,
+			...(membership.collectionKind
+				? { collectionTweetIds: new Set(primaryIds) }
+				: {}),
+			provenance: normalized.sourceUrlByTweetId.size
+				? { sourceUrlByTweetId: normalized.sourceUrlByTweetId }
+				: undefined,
+		});
+	})();
+}
+
+export function validateXJsonText(
+	input: string,
+	db?: Database,
+): XJsonImportResult {
 	const { documents, result } = validateDocuments(input);
 	for (const document of documents) {
-		const normalized = normalizeDocument(document.raw, document.line);
-		if ("error" in normalized) {
-			result.errors.push({ line: document.line, message: normalized.error });
-			continue;
-		}
-		result.imported += normalized.payload.data.length;
+		processDocument(db, document, result, "validate");
 	}
 	return result;
 }
@@ -302,31 +488,8 @@ export function importXJsonText(
 		return result;
 	}
 
-	ensurePublicImportAccount(db);
-
 	for (const document of documents) {
-		const normalized = normalizeDocument(document.raw, document.line);
-		if ("error" in normalized) {
-			result.errors.push({ line: document.line, message: normalized.error });
-			continue;
-		}
-		const primaryIds = normalized.payload.data.map((tweet) => tweet.id);
-		const existingCount = primaryIds.filter((id) => tweetExists(db, id)).length;
-		const newCount = primaryIds.length - existingCount;
-		result.skipped += existingCount;
-		result.imported += newCount;
-
-		db.transaction(() => {
-			ingestTweetPayload(db, {
-				accountId: PUBLIC_ACCOUNT_ID,
-				payload: normalized.payload,
-				source: GROKBOT_SOURCE,
-				edgeKind: "home",
-				provenance: normalized.sourceUrlByTweetId.size
-					? { sourceUrlByTweetId: normalized.sourceUrlByTweetId }
-					: undefined,
-			});
-		})();
+		processDocument(db, document, result, "import");
 	}
 
 	return result;

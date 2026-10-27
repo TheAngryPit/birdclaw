@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { runCliMain } from "../cli";
 import { listTimelineItems } from "./timeline-read-model";
+import type { Database } from "./sqlite";
 import { importXJsonText } from "./x-json-import";
 import { useTestHome } from "../test/test-home";
 
@@ -16,6 +17,53 @@ const SYNTH_AUTHOR = {
 	username: "synth_lab",
 	name: "Synth Lab",
 };
+
+const SYNTH_OWNER_ACCOUNT_ID = "acct_synth_owner";
+const SYNTH_OWNER_HANDLE = "owner_synth";
+
+function seedSynthOwnerAccount(db: Database) {
+	db.prepare(
+		`insert into accounts (
+      id, name, handle, external_user_id, transport, is_default, created_at
+    ) values (?, 'Synth Owner', ?, '910000', 'xurl', 1, ?)`,
+	).run(
+		SYNTH_OWNER_ACCOUNT_ID,
+		`@${SYNTH_OWNER_HANDLE}`,
+		"2026-01-01T00:00:00.000Z",
+	);
+}
+
+function botShapedTweet(
+	overrides: {
+		id?: string;
+		text?: string;
+		url?: string;
+	} = {},
+) {
+	const id = overrides.id ?? "881001";
+	return {
+		id,
+		author_id: SYNTH_AUTHOR.id,
+		text: overrides.text ?? "synth bot payload",
+		created_at: "2026-03-01T12:00:00.000Z",
+		edit_history_post_ids: [id],
+		public_metrics: { repost_count: 3, like_count: 1 },
+		...(overrides.url ? { url: overrides.url } : {}),
+	};
+}
+
+function kindDocument(
+	kind: "home" | "bookmark" | "like" | "mention" | "authored",
+	tweet: ReturnType<typeof botShapedTweet>,
+	account?: string,
+) {
+	return {
+		kind,
+		...(account ? { account } : {}),
+		data: tweet,
+		includes: { users: [SYNTH_AUTHOR], posts: [tweet] },
+	};
+}
 
 function singleTweetResponse(
 	overrides: {
@@ -159,6 +207,178 @@ describe("importXJsonText", () => {
 		expect(db.prepare("select count(*) as count from tweets").get()).toEqual({
 			count: 0,
 		});
+	});
+
+	it("imports kind home on the resolved account with bot field renames", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881100",
+			text: "synth home kind needle",
+		});
+		const result = importXJsonText(
+			db,
+			JSON.stringify(kindDocument("home", tweet)),
+		);
+		expect(result).toEqual({ imported: 1, skipped: 0, errors: [] });
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_account_edges where tweet_id = ?",
+				)
+				.get("881100"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "home" });
+		expect(
+			listTimelineItems(
+				{ resource: "home", search: "home kind", limit: 5 },
+				db,
+			),
+		).toHaveLength(1);
+	});
+
+	it("imports kind mention with mention edge membership", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881101",
+			text: "synth mention kind needle",
+		});
+		expect(
+			importXJsonText(db, JSON.stringify(kindDocument("mention", tweet)))
+				.errors,
+		).toEqual([]);
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_account_edges where tweet_id = ?",
+				)
+				.get("881101"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "mention" });
+		expect(
+			listTimelineItems(
+				{ resource: "mentions", search: "mention kind", limit: 5 },
+				db,
+			),
+		).toHaveLength(1);
+	});
+
+	it("imports kind authored with authored edge membership", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881102",
+			text: "synth authored kind needle",
+		});
+		importXJsonText(db, JSON.stringify(kindDocument("authored", tweet)));
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_account_edges where tweet_id = ?",
+				)
+				.get("881102"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "authored" });
+		expect(
+			listTimelineItems(
+				{ resource: "authored", search: "authored kind", limit: 5 },
+				db,
+			),
+		).toHaveLength(1);
+	});
+
+	it("imports kind bookmark into tweet_collections bookmarks", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881103",
+			text: "synth bookmark kind needle",
+		});
+		importXJsonText(db, JSON.stringify(kindDocument("bookmark", tweet)));
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_collections where tweet_id = ?",
+				)
+				.get("881103"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "bookmarks" });
+		expect(
+			listTimelineItems(
+				{
+					resource: "home",
+					bookmarkedOnly: true,
+					search: "bookmark kind",
+					limit: 5,
+				},
+				db,
+			),
+		).toHaveLength(1);
+	});
+
+	it("imports kind like into tweet_collections likes", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881104",
+			text: "synth like kind needle",
+		});
+		importXJsonText(db, JSON.stringify(kindDocument("like", tweet)));
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_collections where tweet_id = ?",
+				)
+				.get("881104"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "likes" });
+		expect(
+			listTimelineItems(
+				{ resource: "home", likedOnly: true, search: "like kind", limit: 5 },
+				db,
+			),
+		).toHaveLength(1);
+	});
+
+	it("keeps documents without kind on the public home path", () => {
+		const home = testHome();
+		const db = home.db;
+		const tweet = singleTweetResponse({
+			id: "881105",
+			text: "synth legacy public needle",
+		});
+		importXJsonText(db, JSON.stringify(tweet));
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_account_edges where tweet_id = ?",
+				)
+				.get("881105"),
+		).toEqual({ account_id: "public", kind: "home" });
+	});
+
+	it("errors when kind is set but the account cannot be resolved", () => {
+		const home = testHome();
+		const db = home.db;
+		const tweet = botShapedTweet({
+			id: "881106",
+			text: "synth missing account",
+		});
+		const result = importXJsonText(
+			db,
+			JSON.stringify({
+				kind: "home",
+				account: "no_such_account",
+				data: tweet,
+				includes: { users: [SYNTH_AUTHOR] },
+			}),
+		);
+		expect(result.imported).toBe(0);
+		expect(result.errors[0]?.message).toContain("Unknown account");
+		expect(
+			db.prepare("select id from tweets where id = ?").get("881106"),
+		).toBeUndefined();
 	});
 
 	it("is idempotent on duplicate re-import", () => {
