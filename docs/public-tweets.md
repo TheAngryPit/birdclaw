@@ -42,3 +42,14 @@ Partial refreshes never delete rows, remove relationships, or interpret a missin
 ## Read-only boundary
 
 The FxTwitter transport supports named public tweet, author-thread, conversation, profile-object, and bounded post-search reads only. It does not expose user timelines/status feeds, followers/following, trends, typeahead, standalone quote/repost products, bulk archival sync, DMs, home timelines, bookmarks, likes, authenticated mentions, private content, or any write.
+
+## Grok Bot / X API v2 JSON import
+
+Import offline X API v2 tweet responses (the `XurlTweetsResponse` shape) without network access or credentials. Each document may use `data` as one tweet object or an array; optional per-tweet `url` values are stored as `tweet_sources` provenance for `source = 'grokbot'`.
+
+```bash
+birdclaw import x-json ./exports/grok-tweets.jsonl --json
+cat grok-tweets.jsonl | birdclaw import x-json - --json
+```
+
+The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are rejected whole; re-importing the same tweet ids is idempotent.
