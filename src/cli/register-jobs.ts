@@ -7,11 +7,21 @@ import {
 	installBookmarkSyncLaunchAgent,
 	runBookmarkSyncJob,
 } from "#/lib/bookmark-sync-job";
+import {
+	buildXJsonIssuesLaunchAgentPlist,
+	getXJsonIssuesLaunchAgentStatus,
+	installXJsonIssuesLaunchAgent,
+	uninstallXJsonIssuesLaunchAgent,
+} from "#/lib/x-json-issues-job";
 import type { TimelineCollectionMode } from "#/lib/timeline-collections-live";
 import type { CliCommandContext } from "./command-context";
 
 function collectRuntimeArg(value: string, previous: string[]) {
 	return [...previous, value];
+}
+
+function collectAuthorLogin(login: string, previous: string[]) {
+	return [...previous, login];
 }
 
 export function registerJobCommands({
@@ -217,6 +227,100 @@ export function registerJobCommands({
 				stderrPath: options.stderr,
 				launchAgentsDir: options.launchAgentsDir,
 				load: options.load,
+			});
+			print(result, true);
+		});
+
+	jobsCommand
+		.command("install-x-json-issues-launchd")
+		.description(
+			"Install a LaunchAgent that imports Grok Bot JSON from GitHub issues",
+		)
+		.requiredOption("--repo <repo>", "GitHub inbox repository (owner/name)")
+		.option(
+			"--author <login>",
+			"Only import issues opened by this GitHub login (repeatable)",
+			collectAuthorLogin,
+			[],
+		)
+		.option(
+			"--gh <path>",
+			"gh executable passed to birdclaw import x-json-issues",
+		)
+		.option("--label <label>", "LaunchAgent label")
+		.option("--interval-seconds <seconds>", "Launch interval", String(15 * 60))
+		.option(
+			"--program <path>",
+			"birdclaw executable or source entry",
+			"birdclaw",
+		)
+		.option("--runtime <absolute-path>", "Runtime executable for --program")
+		.option(
+			"--runtime-arg <value>",
+			"Repeatable runtime argument (for example --runtime-arg=--no-env-file)",
+			collectRuntimeArg,
+			[],
+		)
+		.option("--env-path <path>", "Shell env file to source before running")
+		.option("--env-file <path>", "Deprecated alias for --env-path")
+		.option("--stdout <path>", "launchd stdout path")
+		.option("--stderr <path>", "launchd stderr path")
+		.option("--launch-agents-dir <path>", "LaunchAgents directory")
+		.option("--no-load", "Write plist without loading it")
+		.option("--print-plist", "Print the LaunchAgent plist and exit")
+		.action(async (options) => {
+			const intervalSeconds = parsePositiveLimitOption(
+				options.intervalSeconds,
+				"--interval-seconds",
+			);
+			const launchOptions = {
+				repo: options.repo,
+				authors: options.author,
+				ghPath: options.gh,
+				label: options.label,
+				intervalSeconds,
+				program: options.program,
+				runtime: options.runtime,
+				runtimeArgs: options.runtimeArg,
+				envFile: options.envPath ?? options.envFile,
+				stdoutPath: options.stdout,
+				stderrPath: options.stderr,
+				launchAgentsDir: options.launchAgentsDir,
+				load: options.load,
+			};
+			if (options.printPlist) {
+				const agent = buildXJsonIssuesLaunchAgentPlist(launchOptions);
+				print(agent.plist, false);
+				return;
+			}
+			const result = await installXJsonIssuesLaunchAgent(launchOptions);
+			print(result, true);
+		});
+
+	jobsCommand
+		.command("uninstall-x-json-issues-launchd")
+		.description("Unload and remove the x-json-issues LaunchAgent plist")
+		.option("--label <label>", "LaunchAgent label")
+		.option("--launch-agents-dir <path>", "LaunchAgents directory")
+		.action(async (options) => {
+			const result = await uninstallXJsonIssuesLaunchAgent({
+				label: options.label,
+				launchAgentsDir: options.launchAgentsDir,
+			});
+			print(result, true);
+		});
+
+	jobsCommand
+		.command("x-json-issues-launchd-status")
+		.description(
+			"Report whether the x-json-issues LaunchAgent plist is installed",
+		)
+		.option("--label <label>", "LaunchAgent label")
+		.option("--launch-agents-dir <path>", "LaunchAgents directory")
+		.action(async (options) => {
+			const result = await getXJsonIssuesLaunchAgentStatus({
+				label: options.label,
+				launchAgentsDir: options.launchAgentsDir,
 			});
 			print(result, true);
 		});

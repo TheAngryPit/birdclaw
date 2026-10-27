@@ -53,3 +53,32 @@ cat grok-tweets.jsonl | birdclaw import x-json - --json
 ```
 
 The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are rejected whole; re-importing the same tweet ids is idempotent.
+
+## Grok Bot GitHub issue inbox (Mac)
+
+Grok Bots can file tweet JSON into a **private** GitHub repository (one issue per batch). On a Mac with `gh` already authenticated, Birdclaw can poll that inbox, import each open issue body through the same `x-json` path, comment `{ imported, skipped, errors }` on the issue, and close it only when `errors` is empty. Failed imports stay open, receive a comment, and get the `import-failed` label so they are not retried forever.
+
+Try against a scratch home before touching production data:
+
+```bash
+export BIRDCLAW_HOME="$HOME/tmp/birdclaw-scratch"
+birdclaw init
+birdclaw import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --dry-run --json
+birdclaw import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --json
+```
+
+Optional `BIRDCLAW_GH_PATH` or `--gh /path/to/gh` selects the GitHub CLI binary (useful under launchd). Install a periodic LaunchAgent (manual step; nothing auto-installs):
+
+```bash
+birdclaw jobs install-x-json-issues-launchd \
+  --repo YOUR_ORG/YOUR_INBOX \
+  --author YOUR_GITHUB_LOGIN \
+  --interval-seconds 900 \
+  --print-plist
+birdclaw jobs install-x-json-issues-launchd \
+  --repo YOUR_ORG/YOUR_INBOX \
+  --author YOUR_GITHUB_LOGIN \
+  --no-load
+birdclaw jobs x-json-issues-launchd-status --json
+birdclaw jobs uninstall-x-json-issues-launchd --json
+```
