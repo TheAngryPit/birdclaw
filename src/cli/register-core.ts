@@ -373,5 +373,8 @@ export function registerCoreCommands({
 			const result = await importXJsonFromPath(db, file);
 			await autoSyncAfterWrite();
 			print(result, asJson());
+			if (result.errors.length > 0) {
+				process.exitCode = 1;
+			}
 		});
 }

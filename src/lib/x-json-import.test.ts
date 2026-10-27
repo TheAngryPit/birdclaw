@@ -6,7 +6,10 @@ import { listTimelineItems } from "./timeline-read-model";
 import { importXJsonText } from "./x-json-import";
 import { useTestHome } from "../test/test-home";
 
-const testHome = useTestHome({ prefix: "birdclaw-x-json-", seedDemoData: false });
+const testHome = useTestHome({
+	prefix: "birdclaw-x-json-",
+	seedDemoData: false,
+});
 
 const SYNTH_AUTHOR = {
 	id: "900001",
@@ -115,13 +118,14 @@ describe("importXJsonText", () => {
 		expect(result.errors).toEqual([]);
 		expect(result.imported).toBe(1);
 		expect(
-			db.prepare("select quoted_tweet_id from tweets where id = ?").get("880010"),
-		).toEqual({ quoted_tweet_id: "880011" });
-		expect(
 			db
-				.prepare("select note_tweet_json from tweets where id = ?")
-				.get("880010")?.note_tweet_json,
-		).toContain("longform");
+				.prepare("select quoted_tweet_id from tweets where id = ?")
+				.get("880010"),
+		).toEqual({ quoted_tweet_id: "880011" });
+		const noteRow = db
+			.prepare("select note_tweet_json from tweets where id = ?")
+			.get("880010") as { note_tweet_json: string | null } | undefined;
+		expect(noteRow?.note_tweet_json).toContain("longform");
 		expect(
 			listTimelineItems({ resource: "home", search: "longform", limit: 5 }, db),
 		).toHaveLength(1);
@@ -136,9 +140,9 @@ describe("importXJsonText", () => {
 		expect(result.errors).toEqual([
 			{ line: 2, message: "Line 2: invalid JSON" },
 		]);
-		expect(
-			db.prepare("select count(*) as count from tweets").get(),
-		).toEqual({ count: 1 });
+		expect(db.prepare("select count(*) as count from tweets").get()).toEqual({
+			count: 1,
+		});
 	});
 
 	it("rejects documents with invalid tweet fields", () => {
@@ -176,7 +180,6 @@ describe("importXJsonText", () => {
 
 describe("import x-json CLI", () => {
 	it("imports from stdin and finds the tweet via search tweets", async () => {
-		const home = testHome();
 		const input = JSON.stringify(
 			singleTweetResponse({
 				id: "880050",
@@ -208,6 +211,31 @@ describe("import x-json CLI", () => {
 			]);
 			const rows = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
 			expect(rows.map((row: { id: string }) => row.id)).toContain("880050");
+		} finally {
+			if (stdinDescriptor) {
+				Object.defineProperty(process, "stdin", stdinDescriptor);
+			}
+		}
+	});
+
+	it("exits non-zero when errors are present but still prints JSON", async () => {
+		const stdin = Readable.from(['{"data":{"id":"1"}}\n']);
+		const stdinDescriptor = Object.getOwnPropertyDescriptor(process, "stdin");
+		Object.defineProperty(process, "stdin", {
+			configurable: true,
+			value: stdin,
+		});
+		try {
+			process.exitCode = 0;
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+			await runCliMain(["node", "birdclaw", "import", "x-json", "-", "--json"]);
+			const payload = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+			expect(payload.errors.length).toBeGreaterThan(0);
+			expect(payload).toMatchObject({
+				imported: 0,
+				skipped: 0,
+			});
+			expect(process.exitCode).toBe(1);
 		} finally {
 			if (stdinDescriptor) {
 				Object.defineProperty(process, "stdin", stdinDescriptor);

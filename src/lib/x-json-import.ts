@@ -37,7 +37,9 @@ function readStringField(
 ): string | { error: string } {
 	const value = record[field];
 	if (typeof value !== "string" || value.trim().length === 0) {
-		return { error: `Line ${String(line)}: ${label} must be a non-empty string` };
+		return {
+			error: `Line ${String(line)}: ${label} must be a non-empty string`,
+		};
 	}
 	return value.trim();
 }
@@ -65,7 +67,12 @@ function normalizeTweetData(
 	if (typeof authorId !== "string") return authorId;
 	const text = readStringField(rest, "text", line, "tweet.text");
 	if (typeof text !== "string") return text;
-	const createdAt = readStringField(rest, "created_at", line, "tweet.created_at");
+	const createdAt = readStringField(
+		rest,
+		"created_at",
+		line,
+		"tweet.created_at",
+	);
 	if (typeof createdAt !== "string") return createdAt;
 	if (Number.isNaN(Date.parse(createdAt))) {
 		return {
@@ -73,14 +80,19 @@ function normalizeTweetData(
 		};
 	}
 	return {
-		tweet: rest as XurlTweetData,
+		tweet: rest as unknown as XurlTweetData,
 		sourceUrl,
 	};
 }
 
-function normalizeUser(value: unknown, line: number): XurlMentionUser | { error: string } {
+function normalizeUser(
+	value: unknown,
+	line: number,
+): XurlMentionUser | { error: string } {
 	if (!isRecord(value)) {
-		return { error: `Line ${String(line)}: includes.users entries must be objects` };
+		return {
+			error: `Line ${String(line)}: includes.users entries must be objects`,
+		};
 	}
 	const id = readStringField(value, "id", line, "user.id");
 	if (typeof id !== "string") return id;
@@ -88,7 +100,7 @@ function normalizeUser(value: unknown, line: number): XurlMentionUser | { error:
 	if (typeof username !== "string") return username;
 	const name = readStringField(value, "name", line, "user.name");
 	if (typeof name !== "string") return name;
-	return value as XurlMentionUser;
+	return value as unknown as XurlMentionUser;
 }
 
 function normalizeIncludes(
@@ -114,7 +126,9 @@ function normalizeIncludes(
 	}
 	if (value.tweets !== undefined) {
 		if (!Array.isArray(value.tweets)) {
-			return { error: `Line ${String(line)}: includes.tweets must be an array` };
+			return {
+				error: `Line ${String(line)}: includes.tweets must be an array`,
+			};
 		}
 		const tweets: XurlTweetData[] = [];
 		for (const tweet of value.tweets) {
@@ -134,7 +148,12 @@ function normalizeIncludes(
 					error: `Line ${String(line)}: includes.media entries must be objects`,
 				};
 			}
-			const mediaKey = readStringField(item, "media_key", line, "media.media_key");
+			const mediaKey = readStringField(
+				item,
+				"media_key",
+				line,
+				"media.media_key",
+			);
 			if (typeof mediaKey !== "string") return mediaKey;
 			const type = readStringField(item, "type", line, "media.type");
 			if (typeof type !== "string") return type;
@@ -182,9 +201,10 @@ function normalizeDocument(
 	};
 }
 
-function splitInputDocuments(
-	input: string,
-): { documents: Array<{ line: number; raw: unknown }>; errors: XJsonImportError[] } {
+function splitInputDocuments(input: string): {
+	documents: Array<{ line: number; raw: unknown }>;
+	errors: XJsonImportError[];
+} {
 	const trimmed = input.trim();
 	if (!trimmed) {
 		throw new Error("import input is empty");
@@ -233,7 +253,10 @@ function tweetExists(db: Database, tweetId: string) {
 	);
 }
 
-export function importXJsonText(db: Database, input: string): XJsonImportResult {
+export function importXJsonText(
+	db: Database,
+	input: string,
+): XJsonImportResult {
 	const result: XJsonImportResult = { imported: 0, skipped: 0, errors: [] };
 	let documents: Array<{ line: number; raw: unknown }>;
 	try {
