@@ -9,6 +9,7 @@ import {
 } from "#/lib/archive-import";
 import {
 	ensureBirdclawDirs,
+	isBirdclawHomeInitialized,
 	setActionsTransport,
 	setPreferredTransport,
 } from "#/lib/config";
@@ -23,8 +24,10 @@ import {
 import { hydrateProfilesFromX } from "#/lib/profile-hydration";
 import {
 	createGhIssueRunner,
+	DEFAULT_GH_ISSUE_LIST_LIMIT,
 	importXJsonIssuesEffect,
 	parseGithubRepo,
+	resolveImportAuthorPolicy,
 } from "#/lib/x-json-issue-import";
 import { importXJsonFromPath } from "#/lib/x-json-import";
 import { getQueryEnvelope } from "#/lib/query-status";
@@ -399,8 +402,17 @@ export function registerCoreCommands({
 			[],
 		)
 		.option(
+			"--any-author",
+			"Import open issues from any GitHub author (omit --author safeguards)",
+		)
+		.option(
 			"--gh <path>",
 			"gh executable (default: BIRDCLAW_GH_PATH or gh on PATH)",
+		)
+		.option(
+			"--limit <n>",
+			"Maximum open issues to fetch from GitHub",
+			String(DEFAULT_GH_ISSUE_LIST_LIMIT),
 		)
 		.option(
 			"--dry-run",
@@ -408,14 +420,25 @@ export function registerCoreCommands({
 		)
 		.action(async (options) => {
 			const repo = parseGithubRepo(options.repo);
-			const db = getNativeDb({ seedDemoData: false });
-			const gh = createGhIssueRunner(options.gh);
+			const { allowedAuthors } = resolveImportAuthorPolicy({
+				authors: options.author,
+				anyAuthor: Boolean(options.anyAuthor),
+			});
+			const limit = parsePositiveIntegerOption(options.limit, "--limit");
+			const dryRun = Boolean(options.dryRun);
+			const db = dryRun ? null : getNativeDb({ seedDemoData: false });
+			if (!dryRun && !isBirdclawHomeInitialized()) {
+				throw new Error(
+					"Birdclaw home is not initialized. Run `birdclaw init` before importing issues.",
+				);
+			}
+			const gh = createGhIssueRunner(options.gh, { limit });
 			const summary = await importXJsonIssuesEffect(
 				db,
 				{
 					repo,
-					allowedAuthors: options.author,
-					dryRun: Boolean(options.dryRun),
+					allowedAuthors,
+					dryRun,
 				},
 				gh,
 			);

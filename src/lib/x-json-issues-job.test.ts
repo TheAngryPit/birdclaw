@@ -29,6 +29,7 @@ describe("x-json-issues launchd", () => {
 	it("builds a plist that honors BIRDCLAW_HOME and repo flags", () => {
 		process.env.BIRDCLAW_HOME = makeTempDir("birdclaw-x-json-issues-home-");
 		resetBirdclawPathsForTests();
+		const home = process.env.BIRDCLAW_HOME!;
 		const agent = buildXJsonIssuesLaunchAgentPlist({
 			repo: "synth-org/synth-inbox",
 			authors: ["synth_bot_a"],
@@ -38,6 +39,10 @@ describe("x-json-issues launchd", () => {
 		});
 
 		expect(agent.label).toBe(DEFAULT_X_JSON_ISSUES_LAUNCHD_LABEL);
+		expect(agent.plist).toContain("<key>BIRDCLAW_HOME</key>");
+		expect(agent.plist).toContain(`<string>${home}</string>`);
+		expect(agent.plist).toContain("<key>BIRDCLAW_GH_PATH</key>");
+		expect(agent.plist).toContain("<string>/opt/homebrew/bin/gh</string>");
 		expect(agent.plist).toContain(
 			`<integer>${String(DEFAULT_X_JSON_ISSUES_INTERVAL_SECONDS)}</integer>`,
 		);
@@ -49,5 +54,27 @@ describe("x-json-issues launchd", () => {
 		expect(agent.programArguments).toContain("--gh");
 		expect(agent.programArguments).toContain("/opt/homebrew/bin/gh");
 		expect(agent.stdoutPath).toContain(process.env.BIRDCLAW_HOME);
+	});
+
+	it("requires at least one --author", () => {
+		process.env.BIRDCLAW_HOME = makeTempDir("birdclaw-x-json-issues-home-");
+		resetBirdclawPathsForTests();
+		expect(() =>
+			buildXJsonIssuesLaunchAgentPlist({
+				repo: "synth-org/synth-inbox",
+				authors: [],
+			}),
+		).toThrow("--author is required");
+	});
+
+	it("validates --repo like the import command", () => {
+		process.env.BIRDCLAW_HOME = makeTempDir("birdclaw-x-json-issues-home-");
+		resetBirdclawPathsForTests();
+		expect(() =>
+			buildXJsonIssuesLaunchAgentPlist({
+				repo: "not-a-repo",
+				authors: ["synth_bot_a"],
+			}),
+		).toThrow("--repo must be a GitHub repository");
 	});
 });

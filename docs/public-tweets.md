@@ -58,27 +58,43 @@ The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are re
 
 Grok Bots can file tweet JSON into a **private** GitHub repository (one issue per batch). On a Mac with `gh` already authenticated, Birdclaw can poll that inbox, import each open issue body through the same `x-json` path, comment `{ imported, skipped, errors }` on the issue, and close it only when `errors` is empty. Failed imports stay open, receive a comment, and get the `import-failed` label so they are not retried forever.
 
+Homebrew/npm `birdclaw` builds from upstream and will not include fork-only inbox commands until they are released there. On a Mac, run this fork from a source checkout (same path as other scheduled jobs in `docs/jobs.md`):
+
+```bash
+git clone https://github.com/TheAngryPit/birdclaw.git
+cd birdclaw
+./scripts/bun-canary.sh install --frozen-lockfile
+./scripts/bun-canary.sh run --bun build
+./scripts/bun-canary.sh bin/birdclaw.mjs --version
+```
+
+Use `./scripts/bun-canary.sh bin/birdclaw.mjs …` (or `bin/birdclaw.mjs` after `build`) instead of `/opt/homebrew/bin/birdclaw` when testing inbox import or installing its LaunchAgent.
+
 Try against a scratch home before touching production data:
 
 ```bash
 export BIRDCLAW_HOME="$HOME/tmp/birdclaw-scratch"
-birdclaw init
-birdclaw import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --dry-run --json
-birdclaw import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --json
+./scripts/bun-canary.sh bin/birdclaw.mjs init
+./scripts/bun-canary.sh bin/birdclaw.mjs import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --dry-run --json
+./scripts/bun-canary.sh bin/birdclaw.mjs import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --json
 ```
 
 Optional `BIRDCLAW_GH_PATH` or `--gh /path/to/gh` selects the GitHub CLI binary (useful under launchd). Install a periodic LaunchAgent (manual step; nothing auto-installs):
 
 ```bash
-birdclaw jobs install-x-json-issues-launchd \
+./scripts/bun-canary.sh bin/birdclaw.mjs jobs install-x-json-issues-launchd \
   --repo YOUR_ORG/YOUR_INBOX \
   --author YOUR_GITHUB_LOGIN \
+  --gh "$(command -v gh)" \
   --interval-seconds 900 \
   --print-plist
-birdclaw jobs install-x-json-issues-launchd \
+./scripts/bun-canary.sh bin/birdclaw.mjs jobs install-x-json-issues-launchd \
   --repo YOUR_ORG/YOUR_INBOX \
   --author YOUR_GITHUB_LOGIN \
+  --gh "$(command -v gh)" \
   --no-load
-birdclaw jobs x-json-issues-launchd-status --json
-birdclaw jobs uninstall-x-json-issues-launchd --json
+./scripts/bun-canary.sh bin/birdclaw.mjs jobs x-json-issues-launchd-status --json
+./scripts/bun-canary.sh bin/birdclaw.mjs jobs uninstall-x-json-issues-launchd --json
 ```
+
+`install-x-json-issues-launchd` requires at least one `--author`. The plist records `BIRDCLAW_HOME` and `BIRDCLAW_GH_PATH` so launchd imports into the same home as the log paths.

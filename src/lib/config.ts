@@ -116,6 +116,10 @@ export function getBirdclawPaths(): BirdclawPaths {
 	return cachedPaths;
 }
 
+export function isBirdclawHomeInitialized() {
+	return existsSync(getBirdclawPaths().dbPath);
+}
+
 function parseConfigFile(configPath: string): BirdclawConfig {
 	if (!existsSync(configPath)) {
 		return {};

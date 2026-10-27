@@ -114,6 +114,15 @@ function stringEntry(value: string) {
 	return `<string>${xmlEscape(value)}</string>`;
 }
 
+function environmentVariablesPlist(variables: Record<string, string>): string {
+	return Object.entries(variables)
+		.map(
+			([key, value]) =>
+				`    <key>${xmlEscape(key)}</key>\n    ${stringEntry(value)}`,
+		)
+		.join("\n");
+}
+
 export function buildLaunchAgent({
 	label,
 	intervalSeconds,
@@ -122,11 +131,19 @@ export function buildLaunchAgent({
 	stderrPath,
 	programArguments,
 	envFile,
-}: Omit<LaunchAgent, "plist" | "envFile"> & { envFile?: string }): LaunchAgent {
+	environmentVariables = {},
+}: Omit<LaunchAgent, "plist" | "envFile"> & {
+	envFile?: string;
+	environmentVariables?: Record<string, string>;
+}): LaunchAgent {
 	const resolvedLogPath = resolveUserPath(logPath);
 	const resolvedStdoutPath = resolveUserPath(stdoutPath);
 	const resolvedStderrPath = resolveUserPath(stderrPath);
 	const resolvedEnvFile = envFile ? resolveUserPath(envFile) : undefined;
+	const mergedEnvironment = {
+		PATH: DEFAULT_LAUNCHD_PATH,
+		...environmentVariables,
+	};
 	const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -147,8 +164,7 @@ export function buildLaunchAgent({
   ${stringEntry(resolvedStderrPath)}
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    ${stringEntry(DEFAULT_LAUNCHD_PATH)}
+${environmentVariablesPlist(mergedEnvironment)}
   </dict>
 </dict>
 </plist>
