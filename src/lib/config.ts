@@ -51,6 +51,15 @@ export interface BirdclawConfig {
 		autoSync?: boolean;
 		staleAfterSeconds?: number;
 	};
+	jobs?: {
+		presets?: Record<
+			string,
+			{
+				accountSyncIntervalSeconds?: number;
+				bookmarksIntervalSeconds?: number;
+			}
+		>;
+	};
 }
 
 export function getPreferredTransport(): LiveTransport | undefined {

@@ -49,7 +49,7 @@ Import offline X API v2 tweet responses (the `XurlTweetsResponse` shape) without
 
 Optional document-level fields align imports with `birdclaw sync` membership on your own account (not the legacy `public` home path):
 
-- `kind`: `home`, `bookmark`, `like`, `mention`, or `authored`. When omitted, behavior is unchanged: tweets land on the `public` account with a `home` edge (existing GitHub inbox issues keep working).
+- `kind`: sync step name — `timeline`, `mentions`, `likes`, `bookmarks`, or `authored` (preferred), or the legacy aliases `home`, `bookmark`, `like`, `mention`, `authored`. When omitted, behavior is unchanged: tweets land on the `public` account with a `home` edge (existing GitHub inbox issues keep working).
 - `account`: handle or account id. When `kind` is set, Birdclaw resolves the owning account the same way sync does (`resolveLiveSyncAccount` / default account). Unknown accounts fail with a clear error.
 
 Grok Bot tool JSON is normalized before ingest: `includes.posts` → `includes.tweets`, `edit_history_post_ids` → `edit_history_tweet_ids`, `public_metrics.repost_count` → `retweet_count`, and per-tweet `url` stays provenance. Edges and collections use the same `ingestTweetPayload` paths as live sync (`home` / `mention` / `authored` edges; `bookmarks` / `likes` collections).
@@ -85,6 +85,17 @@ export BIRDCLAW_HOME="$HOME/tmp/birdclaw-scratch"
 ./scripts/bun-canary.sh bin/birdclaw.mjs import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --dry-run --json
 ./scripts/bun-canary.sh bin/birdclaw.mjs import x-json-issues --repo YOUR_ORG/YOUR_INBOX --author YOUR_GITHUB_LOGIN --json
 ```
+
+Each successful `import x-json-issues` run appends one JSONL audit entry to `~/.birdclaw/audit/x-json-issues-import.jsonl` (override with `--log`, same pattern as `jobs sync-account`). Pass `--log` to match other scheduled jobs.
+
+## Feeding the inbox from an agent
+
+Outside agents should mirror native Birdclaw scheduling instead of inventing their own cadence:
+
+1. Read the schedule: `birdclaw --json jobs presets show <name>` (for example `native` or `relaxed`, or a custom name from `jobs.presets` in `config.json`).
+2. File **one GitHub issue per sync step** in your private inbox repo. Each issue body is a single JSON document (optionally fenced) with `kind` set to the native step (`timeline`, `mentions`, `likes`, `bookmarks`, `authored`) and `account` set to the Birdclaw account handle or id.
+3. Include only tweets **newer than the agent's last successful filing** for that step (track timestamps locally; Birdclaw does not fetch from X on import).
+4. Let `import x-json-issues` (or its LaunchAgent) drain the inbox; inspect `x-json-issues-import.jsonl` for per-issue `imported` / `skipped` / `errors` alongside `step` and `account`.
 
 Optional `BIRDCLAW_GH_PATH` or `--gh /path/to/gh` selects the GitHub CLI binary (useful under launchd). Install a periodic LaunchAgent (manual step; nothing auto-installs):
 

@@ -63,14 +63,28 @@ The Playwright test home is `.playwright-home` in the repo, which is why CI neve
 		"dataSource": "bird",
 		"birdCommand": "/Users/steipete/Projects/bird/bird"
 	},
-	"backup": {
-		"repoPath": "/Users/steipete/Projects/backup-birdclaw",
-		"remote": "https://github.com/steipete/backup-birdclaw.git",
-		"autoSync": true,
-		"staleAfterSeconds": 900
-	}
+  "backup": {
+    "repoPath": "/Users/steipete/Projects/backup-birdclaw",
+    "remote": "https://github.com/steipete/backup-birdclaw.git",
+    "autoSync": true,
+    "staleAfterSeconds": 900
+  },
+  "jobs": {
+    "presets": {
+      "evening": {
+        "accountSyncIntervalSeconds": 7200,
+        "bookmarksIntervalSeconds": 21600
+      }
+    }
+  }
 }
 ```
+
+### `jobs.presets`
+
+Optional named LaunchAgent schedules for `jobs install-account-launchd` and `jobs install-bookmarks-launchd`. Each preset may set `accountSyncIntervalSeconds` and/or `bookmarksIntervalSeconds` (positive integers). Built-in preset names `native` and `relaxed` cannot be redefined here.
+
+Inspect presets with `birdclaw jobs presets list --json` and `birdclaw jobs presets show <name> --json`. Pass `--preset <name>` on install; explicit `--interval-seconds` still overrides the preset value for that job.
 
 ### `accounts.default`
 

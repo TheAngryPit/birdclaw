@@ -418,6 +418,10 @@ export function registerCoreCommands({
 			"--dry-run",
 			"Validate issue bodies without writing to the DB or GitHub",
 		)
+		.option(
+			"--log <path>",
+			"Audit JSONL path (default: ~/.birdclaw/audit/x-json-issues-import.jsonl)",
+		)
 		.action(async (options) => {
 			const repo = parseGithubRepo(options.repo);
 			const { allowedAuthors } = resolveImportAuthorPolicy({
@@ -439,6 +443,7 @@ export function registerCoreCommands({
 					repo,
 					allowedAuthors,
 					dryRun,
+					logPath: options.log,
 				},
 				gh,
 			);

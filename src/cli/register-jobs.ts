@@ -13,6 +13,10 @@ import {
 	installXJsonIssuesLaunchAgent,
 	uninstallXJsonIssuesLaunchAgent,
 } from "#/lib/x-json-issues-job";
+import {
+	listJobSchedulePresets,
+	resolveJobSchedulePreset,
+} from "#/lib/job-schedule-presets";
 import type { TimelineCollectionMode } from "#/lib/timeline-collections-live";
 import type { CliCommandContext } from "./command-context";
 
@@ -32,6 +36,24 @@ export function registerJobCommands({
 	const jobsCommand = program
 		.command("jobs")
 		.description("Run and install background Birdclaw jobs");
+
+	const presetsCommand = jobsCommand
+		.command("presets")
+		.description("List built-in and config job schedule presets");
+
+	presetsCommand
+		.command("list")
+		.description("List schedule preset names and intervals")
+		.action(() => {
+			print(listJobSchedulePresets(), true);
+		});
+
+	presetsCommand
+		.command("show <name>")
+		.description("Show one schedule preset")
+		.action((name: string) => {
+			print(resolveJobSchedulePreset(name), true);
+		});
 
 	jobsCommand
 		.command("sync-account")
@@ -77,7 +99,10 @@ export function registerJobCommands({
 		.command("install-account-launchd")
 		.description("Install a LaunchAgent that runs account sync")
 		.option("--label <label>", "LaunchAgent label")
-		.option("--interval-seconds <seconds>", "Launch interval", "1800")
+		.option(
+			"--interval-seconds <seconds>",
+			"Launch interval (overrides --preset)",
+		)
 		.option(
 			"--program <path>",
 			"birdclaw executable or source entry",
@@ -109,6 +134,10 @@ export function registerJobCommands({
 			"Assert bird cookies match --account for Bird-backed steps",
 		)
 		.option("--log <path>", "Audit JSONL path")
+		.option(
+			"--preset <name>",
+			"Built-in or config schedule preset (native, relaxed, or jobs.presets.*)",
+		)
 		.option("--env-path <path>", "Shell env file to source before running")
 		.option("--env-file <path>", "Deprecated alias for --env-path")
 		.option("--stdout <path>", "launchd stdout path")
@@ -116,14 +145,17 @@ export function registerJobCommands({
 		.option("--launch-agents-dir <path>", "LaunchAgents directory")
 		.option("--no-load", "Write plist without loading it")
 		.action(async (options) => {
-			const intervalSeconds = parsePositiveLimitOption(
-				options.intervalSeconds,
-				"--interval-seconds",
-			);
+			const intervalSeconds = options.intervalSeconds
+				? parsePositiveLimitOption(
+						options.intervalSeconds,
+						"--interval-seconds",
+					)
+				: undefined;
 
 			const result = await installAccountSyncLaunchAgent({
 				label: options.label,
 				intervalSeconds,
+				preset: options.preset,
 				program: options.program,
 				runtime: options.runtime,
 				runtimeArgs: options.runtimeArg,
@@ -176,7 +208,10 @@ export function registerJobCommands({
 		.description("Install a LaunchAgent that runs bookmark sync every 3 hours")
 		.option("--account <username>", "Account username or id")
 		.option("--label <label>", "LaunchAgent label")
-		.option("--interval-seconds <seconds>", "Launch interval", "10800")
+		.option(
+			"--interval-seconds <seconds>",
+			"Launch interval (overrides --preset)",
+		)
 		.option(
 			"--program <path>",
 			"birdclaw executable or source entry",
@@ -196,6 +231,10 @@ export function registerJobCommands({
 		.option("--cache-ttl <seconds>", "Live-cache freshness window", "120")
 		.option("--no-refresh", "Allow live-cache reuse")
 		.option("--log <path>", "Audit JSONL path")
+		.option(
+			"--preset <name>",
+			"Built-in or config schedule preset (native, relaxed, or jobs.presets.*)",
+		)
 		.option("--env-path <path>", "Shell env file to source before running")
 		.option("--env-file <path>", "Deprecated alias for --env-path")
 		.option("--stdout <path>", "launchd stdout path")
@@ -203,15 +242,18 @@ export function registerJobCommands({
 		.option("--launch-agents-dir <path>", "LaunchAgents directory")
 		.option("--no-load", "Write plist without loading it")
 		.action(async (options) => {
-			const intervalSeconds = parsePositiveLimitOption(
-				options.intervalSeconds,
-				"--interval-seconds",
-			);
+			const intervalSeconds = options.intervalSeconds
+				? parsePositiveLimitOption(
+						options.intervalSeconds,
+						"--interval-seconds",
+					)
+				: undefined;
 
 			const result = await installBookmarkSyncLaunchAgent({
 				account: options.account,
 				label: options.label,
 				intervalSeconds,
+				preset: options.preset,
 				program: options.program,
 				runtime: options.runtime,
 				runtimeArgs: options.runtimeArg,

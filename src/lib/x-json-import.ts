@@ -24,6 +24,75 @@ export const X_JSON_IMPORT_KINDS = [
 ] as const;
 export type XJsonImportKind = (typeof X_JSON_IMPORT_KINDS)[number];
 
+export const X_JSON_NATIVE_IMPORT_STEPS = [
+	"timeline",
+	"mentions",
+	"likes",
+	"bookmarks",
+	"authored",
+] as const;
+export type XJsonNativeImportStep = (typeof X_JSON_NATIVE_IMPORT_STEPS)[number];
+
+const X_JSON_KIND_INPUT_ALIASES: Record<string, XJsonImportKind> = {
+	home: "home",
+	timeline: "home",
+	bookmark: "bookmark",
+	bookmarks: "bookmark",
+	like: "like",
+	likes: "like",
+	mention: "mention",
+	mentions: "mention",
+	authored: "authored",
+};
+
+export const X_JSON_ACCEPTED_KIND_INPUTS = [
+	...new Set(Object.keys(X_JSON_KIND_INPUT_ALIASES)),
+].sort();
+
+export function xJsonImportKindToNativeStep(
+	kind: XJsonImportKind,
+): XJsonNativeImportStep {
+	switch (kind) {
+		case "home":
+			return "timeline";
+		case "mention":
+			return "mentions";
+		case "like":
+			return "likes";
+		case "bookmark":
+			return "bookmarks";
+		case "authored":
+			return "authored";
+		default: {
+			const _exhaustive: never = kind;
+			return _exhaustive;
+		}
+	}
+}
+
+export function readXJsonRoutingFromDocument(
+	raw: unknown,
+	line = 1,
+):
+	| {
+			kind?: XJsonImportKind;
+			account?: string;
+			step?: XJsonNativeImportStep;
+	  }
+	| { error: string } {
+	if (!isRecord(raw)) {
+		return { error: `Line ${String(line)}: expected a JSON object` };
+	}
+	const extracted = extractDocumentMetadata(raw, line);
+	if ("error" in extracted) return extracted;
+	return {
+		...extracted.metadata,
+		...(extracted.metadata.kind
+			? { step: xJsonImportKindToNativeStep(extracted.metadata.kind) }
+			: {}),
+	};
+}
+
 interface XJsonDocumentMetadata {
 	kind?: XJsonImportKind;
 	account?: string;
@@ -208,12 +277,13 @@ function parseImportKind(
 		return { error: `Line ${String(line)}: kind must be a string` };
 	}
 	const normalized = value.trim().toLowerCase();
-	if (!X_JSON_IMPORT_KINDS.includes(normalized as XJsonImportKind)) {
+	const mapped = X_JSON_KIND_INPUT_ALIASES[normalized];
+	if (!mapped) {
 		return {
-			error: `Line ${String(line)}: kind must be one of ${X_JSON_IMPORT_KINDS.join(", ")}`,
+			error: `Line ${String(line)}: kind must be one of ${X_JSON_ACCEPTED_KIND_INPUTS.join(", ")}`,
 		};
 	}
-	return normalized as XJsonImportKind;
+	return mapped;
 }
 
 function extractDocumentMetadata(
@@ -512,4 +582,24 @@ export async function importXJsonFromPath(
 ): Promise<XJsonImportResult> {
 	const input = await readXJsonImportInput(path);
 	return importXJsonText(db, input);
+}
+
+export function readXJsonRoutingFromImportText(input: string) {
+	const payload = unwrapMarkdownJsonFence(input).trim();
+	if (!payload) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(payload);
+		const routing = readXJsonRoutingFromDocument(parsed, 1);
+		return "error" in routing ? undefined : routing;
+	} catch {
+		const firstLine = payload.split(/\r?\n/u).find((line) => line.trim());
+		if (!firstLine) return undefined;
+		try {
+			const parsed: unknown = JSON.parse(firstLine);
+			const routing = readXJsonRoutingFromDocument(parsed, 1);
+			return "error" in routing ? undefined : routing;
+		} catch {
+			return undefined;
+		}
+	}
 }

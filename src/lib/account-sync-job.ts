@@ -24,8 +24,8 @@ import {
 	type TimelineCollectionMode,
 } from "./timeline-collections-live";
 import { syncHomeTimeline } from "./timeline-live";
+import { resolveLaunchIntervalSeconds } from "./job-schedule-presets";
 
-const DEFAULT_ACCOUNT_SYNC_INTERVAL_SECONDS = 30 * 60;
 const DEFAULT_ACCOUNT_SYNC_LIMIT = 100;
 const DEFAULT_ACCOUNT_SYNC_MAX_PAGES = 3;
 const DEFAULT_ACCOUNT_SYNC_LABEL = "com.steipete.birdclaw.account-sync";
@@ -88,6 +88,7 @@ export interface AccountSyncAuditEntry {
 export interface AccountSyncLaunchAgentOptions {
 	label?: string;
 	intervalSeconds?: number;
+	preset?: string;
 	program?: string;
 	runtime?: string;
 	runtimeArgs?: string[];
@@ -469,8 +470,11 @@ export function buildAccountSyncLaunchAgentPlist(
 	options: AccountSyncLaunchAgentOptions = {},
 ) {
 	const label = options.label ?? DEFAULT_ACCOUNT_SYNC_LABEL;
-	const intervalSeconds =
-		options.intervalSeconds ?? DEFAULT_ACCOUNT_SYNC_INTERVAL_SECONDS;
+	const intervalSeconds = resolveLaunchIntervalSeconds({
+		job: "account-sync",
+		preset: options.preset,
+		explicitIntervalSeconds: options.intervalSeconds,
+	});
 	const logPath = resolveUserPath(
 		options.logPath ?? getDefaultAccountSyncAuditLogPath(),
 	);

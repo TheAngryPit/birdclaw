@@ -1,6 +1,10 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import {
+	getDefaultXJsonIssuesImportAuditLogPath,
 	importXJsonIssuesEffect,
 	X_JSON_IMPORT_FAILED_LABEL,
 	type GhIssue,
@@ -108,6 +112,61 @@ describe("importXJsonIssuesEffect", () => {
 		expect(
 			home.db.prepare("select id from tweets where id = ?").get("990001"),
 		).toBeTruthy();
+	});
+
+	it("appends one JSONL audit entry with sync-style run metadata per issue", async () => {
+		const home = testHome();
+		const logPath = path.join(home.root, "audit", "inbox-audit.jsonl");
+		const runner = new RecordingGhRunner([
+			issue({
+				number: 11,
+				body: JSON.stringify({
+					kind: "bookmarks",
+					account: "acct_synth_owner",
+					data: JSON.parse(tweetBody({ id: "990011" })).data,
+					includes: JSON.parse(tweetBody({ id: "990011" })).includes,
+				}),
+			}),
+		]);
+		home.db
+			.prepare(
+				`insert into accounts (
+          id, name, handle, external_user_id, transport, is_default, created_at
+        ) values ('acct_synth_owner', 'Synth Owner', '@owner_synth', '910000', 'xurl', 1, ?)`,
+			)
+			.run("2026-01-01T00:00:00.000Z");
+		await importXJsonIssuesEffect(
+			home.db,
+			{ repo: "synth-org/synth-inbox", logPath },
+			runner,
+		);
+		const line = readFileSync(logPath, "utf8").trim();
+		const entry = JSON.parse(line) as Record<string, unknown>;
+		expect(entry).toMatchObject({
+			job: "x-json-issues-import",
+			ok: true,
+			host: os.hostname(),
+			pid: process.pid,
+		});
+		expect(entry.startedAt).toEqual(expect.any(String));
+		expect(entry.finishedAt).toEqual(expect.any(String));
+		expect(entry.durationMs).toEqual(expect.any(Number));
+		expect(entry.options).toMatchObject({ repo: "synth-org/synth-inbox" });
+		expect(entry.issues).toEqual([
+			expect.objectContaining({
+				issueNumber: 11,
+				account: "acct_synth_owner",
+				step: "bookmarks",
+				imported: 1,
+				skipped: 0,
+				errors: [],
+				ok: true,
+				action: "imported",
+			}),
+		]);
+		expect(getDefaultXJsonIssuesImportAuditLogPath()).toContain(
+			"audit/x-json-issues-import.jsonl",
+		);
 	});
 
 	it("keeps malformed issues open, comments, and labels import-failed", async () => {
