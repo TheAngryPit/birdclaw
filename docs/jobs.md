@@ -7,7 +7,20 @@ description: "Scheduler-friendly bookmark sync with launchd integration, audit l
 
 `birdclaw jobs` is the scheduler-friendly subset of sync: short defaults, JSONL audit logs, lock files to prevent overlap, and launchd installers for macOS.
 
-Both LaunchAgent installers accept `--interval-seconds <seconds>` as a positive safe integer. Zero, negative, fractional, non-numeric, and unsafe values exit nonzero before writing a plist. Existing numeric spellings such as `1e3` (1,000 seconds) and `0x10` (16 seconds) remain accepted.
+Both LaunchAgent installers accept `--interval-seconds <seconds>` as a positive safe integer (overrides `--preset` when both are set). Zero, negative, fractional, non-numeric, and unsafe values exit nonzero before writing a plist. Existing numeric spellings such as `1e3` (1,000 seconds) and `0x10` (16 seconds) remain accepted.
+
+When `--interval-seconds` is omitted, `--preset <name>` selects a schedule:
+
+- **`native`** (default when no preset is passed): account sync every 1,800s; bookmarks every 10,800s
+- **`relaxed`**: account sync every 5,400s; bookmarks every 14,400s
+- **Custom names** from `jobs.presets` in `config.json` (see [Configuration](configuration.md#jobs-presets))
+
+```bash
+birdclaw --json jobs presets list
+birdclaw --json jobs presets show relaxed
+birdclaw --json jobs install-account-launchd --preset relaxed --program /opt/homebrew/bin/birdclaw
+birdclaw --json jobs install-bookmarks-launchd --preset relaxed --program /opt/homebrew/bin/birdclaw
+```
 
 ## `jobs sync-account`
 

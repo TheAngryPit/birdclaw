@@ -24,8 +24,8 @@ import {
 	syncTimelineCollectionEffect,
 	type TimelineCollectionMode,
 } from "./timeline-collections-live";
+import { resolveLaunchIntervalSeconds } from "./job-schedule-presets";
 
-const DEFAULT_BOOKMARK_SYNC_INTERVAL_SECONDS = 3 * 60 * 60;
 const DEFAULT_BOOKMARK_SYNC_LIMIT = 100;
 const DEFAULT_BOOKMARK_SYNC_MAX_PAGES = 5;
 const DEFAULT_LAUNCHD_LABEL = "com.steipete.birdclaw.bookmarks-sync";
@@ -82,6 +82,7 @@ export interface BookmarkSyncLaunchAgentOptions {
 	account?: string;
 	label?: string;
 	intervalSeconds?: number;
+	preset?: string;
 	program?: string;
 	runtime?: string;
 	runtimeArgs?: string[];
@@ -294,8 +295,11 @@ export function buildBookmarkSyncLaunchAgentPlist(
 	options: BookmarkSyncLaunchAgentOptions = {},
 ) {
 	const label = options.label ?? DEFAULT_LAUNCHD_LABEL;
-	const intervalSeconds =
-		options.intervalSeconds ?? DEFAULT_BOOKMARK_SYNC_INTERVAL_SECONDS;
+	const intervalSeconds = resolveLaunchIntervalSeconds({
+		job: "bookmarks-sync",
+		preset: options.preset,
+		explicitIntervalSeconds: options.intervalSeconds,
+	});
 	const logPath = resolveUserPath(
 		options.logPath ?? getDefaultBookmarkSyncAuditLogPath(),
 	);

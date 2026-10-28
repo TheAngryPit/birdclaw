@@ -1,10 +1,17 @@
+import path from "node:path";
+import { ensureBirdclawDirs, getBirdclawPaths } from "./config";
 import type { Database } from "./sqlite";
 import { runSubprocess } from "./subprocess";
+import { appendScheduledJobAudit, startScheduledJobRun } from "./scheduled-job";
+import { resolveUserPath } from "./launchd";
 import {
 	importXJsonText,
+	readXJsonRoutingFromImportText,
 	unwrapMarkdownJsonFence,
 	validateXJsonText,
+	type XJsonImportError,
 	type XJsonImportResult,
+	type XJsonNativeImportStep,
 } from "./x-json-import";
 
 export const X_JSON_IMPORT_FAILED_LABEL = "import-failed";
@@ -39,6 +46,7 @@ export interface XJsonIssuesImportOptions {
 	repo: string;
 	allowedAuthors?: readonly string[];
 	dryRun?: boolean;
+	logPath?: string;
 }
 
 export type XJsonIssueAction =
@@ -63,6 +71,41 @@ export interface XJsonIssuesImportSummary {
 	repo: string;
 	dryRun: boolean;
 	issues: XJsonIssueImportItem[];
+}
+
+export interface XJsonIssuesImportAuditIssueStep {
+	issueNumber: number;
+	account?: string;
+	step?: XJsonNativeImportStep;
+	imported: number;
+	skipped: number;
+	errors: XJsonImportError[];
+	ok: boolean;
+	action: XJsonIssueAction;
+}
+
+export interface XJsonIssuesImportAuditEntry {
+	job: "x-json-issues-import";
+	ok: boolean;
+	startedAt: string;
+	finishedAt: string;
+	durationMs: number;
+	host: string;
+	pid: number;
+	options: {
+		repo: string;
+		dryRun: boolean;
+		allowedAuthors?: string[];
+	};
+	issues: XJsonIssuesImportAuditIssueStep[];
+}
+
+export function getDefaultXJsonIssuesImportAuditLogPath() {
+	return path.join(
+		getBirdclawPaths().rootDir,
+		"audit",
+		"x-json-issues-import.jsonl",
+	);
 }
 
 export function resolveGhExecutable(explicitPath?: string) {
@@ -152,7 +195,9 @@ export async function importXJsonIssuesEffect(
 	const repo = parseGithubRepo(options.repo);
 	const dryRun = Boolean(options.dryRun);
 	const issues: XJsonIssueImportItem[] = [];
+	const auditIssues: XJsonIssuesImportAuditIssueStep[] = [];
 	let ok = true;
+	const run = startScheduledJobRun();
 
 	for (const issue of await gh.listOpenIssues(repo)) {
 		if (issueHasFailedLabel(issue)) {
@@ -172,6 +217,7 @@ export async function importXJsonIssuesEffect(
 			continue;
 		}
 
+		const routing = readXJsonRoutingFromImportText(issue.body);
 		const result = importIssueBody(db, issue.body, dryRun);
 		const hasErrors = result.errors.length > 0;
 		if (hasErrors) ok = false;
@@ -182,6 +228,17 @@ export async function importXJsonIssuesEffect(
 			action: dryRun ? "dry-run" : hasErrors ? "failed" : "imported",
 			result,
 		};
+
+		auditIssues.push({
+			issueNumber: issue.number,
+			...(routing?.account ? { account: routing.account } : {}),
+			...(routing?.step ? { step: routing.step } : {}),
+			imported: result.imported,
+			skipped: result.skipped,
+			errors: result.errors,
+			ok: !hasErrors,
+			action: item.action,
+		});
 
 		if (!dryRun) {
 			const comment = formatImportComment(result);
@@ -197,6 +254,27 @@ export async function importXJsonIssuesEffect(
 		}
 
 		issues.push(item);
+	}
+
+	if (!dryRun) {
+		ensureBirdclawDirs();
+		const resolvedLogPath = resolveUserPath(
+			options.logPath ?? getDefaultXJsonIssuesImportAuditLogPath(),
+		);
+		const entry: XJsonIssuesImportAuditEntry = {
+			job: "x-json-issues-import",
+			ok,
+			...run.finish(),
+			options: {
+				repo,
+				dryRun,
+				...(options.allowedAuthors
+					? { allowedAuthors: [...options.allowedAuthors] }
+					: {}),
+			},
+			issues: auditIssues,
+		};
+		await appendScheduledJobAudit(resolvedLogPath, entry);
 	}
 
 	return { ok, repo, dryRun, issues };

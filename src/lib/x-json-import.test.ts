@@ -209,6 +209,33 @@ describe("importXJsonText", () => {
 		});
 	});
 
+	it("accepts native timeline kind alias for home membership", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const tweet = botShapedTweet({
+			id: "881120",
+			text: "synth timeline alias needle",
+		});
+		const result = importXJsonText(
+			db,
+			JSON.stringify({
+				kind: "timeline",
+				account: SYNTH_OWNER_HANDLE,
+				data: tweet,
+				includes: { users: [SYNTH_AUTHOR] },
+			}),
+		);
+		expect(result.errors).toEqual([]);
+		expect(
+			db
+				.prepare(
+					"select account_id, kind from tweet_account_edges where tweet_id = ?",
+				)
+				.get("881120"),
+		).toEqual({ account_id: SYNTH_OWNER_ACCOUNT_ID, kind: "home" });
+	});
+
 	it("imports kind home on the resolved account with bot field renames", () => {
 		const home = testHome();
 		const db = home.db;
