@@ -51,6 +51,27 @@ Sync is idempotent — re-running merges new events without disturbing already-i
 
 `--mode auto` is the default. It uses native `web` for request inboxes when session cookies are configured, and for the default account's full inbox so request state is retained. Other reads try xurl, with native-cookie and legacy bird fallback when available. `--mode xurl` imports recent OAuth2 `/2/dm_events` as accepted conversations; that API does not expose accept/reject state. Explicit non-default account reads prefer account-scoped xurl; `--mode web` requires cookies matching the selected account.
 
+## Offline X Chat import (`import dm-json`)
+
+Import already-decrypted JSON from [xchat-grokbot-helper](https://github.com/xdevplatform/xchat-grokbot-helper) without network access:
+
+```bash
+birdclaw import dm-json ./exports/decrypt.json --account acct_owner --json
+cat decrypt.jsonl | birdclaw import dm-json - --account acct_owner --conversations ./conversations.json --json
+```
+
+Input is helper `decrypt` output (`messages[]`) or JSONL with one row per line. Optional `--conversations` supplies `participant_ids` and `inbox_kind` (`accepted` or `request`) keyed by conversation id.
+
+**v1 skips (counted in the summary, not stored):**
+
+- decrypt `error` rows and `notice` events
+- non-`Message` events (including reactions and edits / `change` rows)
+- non-text `content_type` (media-only payloads)
+- group conversations with more than one other participant (requires `--conversations`)
+- malformed rows missing required ids, text, or timestamps
+
+Imported text messages merge through the same offline adapter as live xurl DM sync. Re-import is idempotent. The command never writes `original_b64`, decryption status, or key material to SQLite. Attachments become inline `[n attachment(s)]` placeholders only. Audit JSONL (`--log`, default `~/.birdclaw/audit/dm-json-import.jsonl`) records counts only — no message bodies.
+
 ## Message requests without bird
 
 Set `AUTH_TOKEN` and `CT0` in a protected environment, then use the native web transport:
