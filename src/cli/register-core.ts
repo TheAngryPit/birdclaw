@@ -30,6 +30,10 @@ import {
 	resolveImportAuthorPolicy,
 } from "#/lib/x-json-issue-import";
 import { importXJsonFromPath } from "#/lib/x-json-import";
+import {
+	importDmJsonFromPath,
+	readDmJsonConversationsMap,
+} from "#/lib/dm-json-import";
 import { getQueryEnvelope } from "#/lib/query-status";
 import { seedDemoData } from "#/lib/seed";
 import { printError, type CliCommandContext } from "./command-context";
@@ -386,6 +390,49 @@ export function registerCoreCommands({
 			await autoSyncAfterWrite();
 			print(result, asJson());
 			if (result.errors.length > 0) {
+				process.exitCode = 1;
+			}
+		});
+	importCommand
+		.command("dm-json [file]")
+		.description(
+			"Import decrypted X Chat DM JSON or JSONL from a file or stdin",
+		)
+		.option("--account <username>", "Account username or id")
+		.option(
+			"--conversations <path>",
+			"JSON map of conversation_id to participant_ids and inbox_kind",
+		)
+		.option(
+			"--dry-run",
+			"Validate and summarize without writing to the database",
+		)
+		.option(
+			"--log <path>",
+			"Audit JSONL path (default: ~/.birdclaw/audit/dm-json-import.jsonl)",
+		)
+		.action(async (file = "-", options) => {
+			if (!isBirdclawHomeInitialized()) {
+				throw new Error(
+					"Birdclaw home is not initialized. Run `birdclaw init` before importing DMs.",
+				);
+			}
+			const db = getNativeDb({ seedDemoData: false });
+			const conversations = options.conversations
+				? await readDmJsonConversationsMap(options.conversations)
+				: undefined;
+			const result = await importDmJsonFromPath(db, file, {
+				account: options.account,
+				conversations,
+				conversationsPath: options.conversations,
+				dryRun: Boolean(options.dryRun),
+				logPath: options.log,
+			});
+			if (!options.dryRun) {
+				await autoSyncAfterWrite();
+			}
+			print(result, asJson());
+			if (!result.ok || result.errors.length > 0) {
 				process.exitCode = 1;
 			}
 		});

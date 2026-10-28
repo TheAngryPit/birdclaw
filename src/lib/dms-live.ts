@@ -519,10 +519,12 @@ function adaptXurlDmEventsToBirdPayload({
 	payload,
 	localExternalUserId,
 	accountUsername,
+	conversationInboxKinds,
 }: {
 	payload: XurlDmEventsResponse;
 	localExternalUserId: string;
 	accountUsername: string;
+	conversationInboxKinds?: ReadonlyMap<string, "accepted" | "request">;
 }): DirectMessagesPayload {
 	const users = new Map<string, BirdDmUser>();
 	const addUser = (user?: BirdDmUser) => {
@@ -570,8 +572,10 @@ function adaptXurlDmEventsToBirdPayload({
 			...(recipientId
 				? { recipient: users.get(recipientId) ?? { id: recipientId } }
 				: {}),
-			inboxKind: "accepted",
-			isMessageRequest: false,
+			inboxKind: conversationInboxKinds?.get(conversationId) ?? "accepted",
+			isMessageRequest:
+				(conversationInboxKinds?.get(conversationId) ?? "accepted") ===
+				"request",
 		};
 		events.push(dmEvent);
 		const conversationEvents = eventsByConversation.get(conversationId) ?? [];
@@ -596,13 +600,47 @@ function adaptXurlDmEventsToBirdPayload({
 				messages: conversationEvents,
 				lastMessageAt: latest?.createdAt,
 				lastMessagePreview: latest?.text,
-				inboxKind: "accepted" as const,
-				isMessageRequest: false,
+				inboxKind:
+					conversationInboxKinds?.get(conversationId) ?? ("accepted" as const),
+				isMessageRequest:
+					(conversationInboxKinds?.get(conversationId) ?? "accepted") ===
+					"request",
 			};
 		},
 	);
 
 	return { conversations, events };
+}
+
+export function mergeImportedXurlDmEventsIntoLocalStore(
+	db: Database,
+	accountSelector: string | undefined,
+	payload: XurlDmEventsResponse,
+	options: {
+		conversationInboxKinds?: ReadonlyMap<string, "accepted" | "request">;
+	} = {},
+) {
+	const account = resolveLiveSyncAccount(db, accountSelector);
+	const localExternalUserId = account.externalUserId?.trim();
+	if (!localExternalUserId) {
+		throw new Error(
+			`Account ${account.accountId} has no external_user_id; required for DM import`,
+		);
+	}
+	const adapted = adaptXurlDmEventsToBirdPayload({
+		payload,
+		localExternalUserId,
+		accountUsername: account.username,
+		conversationInboxKinds: options.conversationInboxKinds,
+	});
+	mergeDirectMessagesIntoLocalStore(
+		db,
+		account.accountId,
+		account.username,
+		localExternalUserId,
+		adapted,
+	);
+	return account;
 }
 
 function mergeXurlDmPages(pages: XurlDmEventsResponse[]): XurlDmEventsResponse {
