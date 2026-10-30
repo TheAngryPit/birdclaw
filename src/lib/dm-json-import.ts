@@ -4,9 +4,15 @@ import { ensureBirdclawDirs, getBirdclawPaths } from "./config";
 import { mergeImportedXurlDmEventsIntoLocalStore } from "./dms-live";
 import { resolveLiveSyncAccount } from "./live-sync-engine";
 import { resolveUserPath } from "./launchd";
+import { normalizeProfileHandle } from "./profile-row";
 import { appendScheduledJobAudit, startScheduledJobRun } from "./scheduled-job";
 import type { Database } from "./sqlite";
-import type { XurlDmEvent, XurlDmEventsResponse } from "./types";
+import type {
+	XurlDmEvent,
+	XurlDmEventsResponse,
+	XurlMentionUser,
+} from "./types";
+import { upsertProfileFromXUser } from "./x-profile";
 
 export const DM_JSON_SKIP_REASONS = [
 	"error-row",
@@ -40,6 +46,146 @@ export interface DmJsonConversationMetadata {
 }
 
 type JsonRecord = Record<string, unknown>;
+
+const X_USER_ID_PATTERN = /^[0-9]+$/;
+
+function mergeUsersById(...groups: XurlMentionUser[][]) {
+	const merged = new Map<string, XurlMentionUser>();
+	for (const group of groups) {
+		for (const user of group) {
+			merged.set(user.id, { ...merged.get(user.id), ...user });
+		}
+	}
+	return [...merged.values()];
+}
+
+function conversationTitleForImportedUser(user: XurlMentionUser) {
+	const username = normalizeProfileHandle(String(user.username ?? ""));
+	const name = String(user.name ?? "").trim();
+	return username || name || String(user.id);
+}
+
+function normalizeDmJsonUser(
+	value: unknown,
+	line: number,
+): XurlMentionUser | { error: string } {
+	if (!isRecord(value)) {
+		return {
+			error: `Line ${String(line)}: user entries must be objects`,
+		};
+	}
+	const id = readString(value.id);
+	if (!id) {
+		return {
+			error: `Line ${String(line)}: user.id must be a non-empty string`,
+		};
+	}
+	if (!X_USER_ID_PATTERN.test(id)) {
+		return {
+			error: `Line ${String(line)}: user.id must be a numeric string`,
+		};
+	}
+	const username = readString(value.username);
+	if (!username) {
+		return {
+			error: `Line ${String(line)}: user.username must be a non-empty string`,
+		};
+	}
+	const name = readString(value.name);
+	if (!name) {
+		return {
+			error: `Line ${String(line)}: user.name must be a non-empty string`,
+		};
+	}
+	const user: XurlMentionUser = {
+		id,
+		username,
+		name,
+	};
+	const profileImageUrl = readString(value.profile_image_url);
+	if (profileImageUrl) user.profile_image_url = profileImageUrl;
+	if (isRecord(value.public_metrics)) {
+		user.public_metrics =
+			value.public_metrics as XurlMentionUser["public_metrics"];
+	}
+	return user;
+}
+
+function parseDmJsonUsersList(
+	value: unknown,
+	line: number,
+): XurlMentionUser[] | { error: string } {
+	if (!Array.isArray(value)) {
+		return {
+			error: `Line ${String(line)}: users must be an array`,
+		};
+	}
+	const users: XurlMentionUser[] = [];
+	for (const entry of value) {
+		const normalized = normalizeDmJsonUser(entry, line);
+		if ("error" in normalized) return normalized;
+		users.push(normalized);
+	}
+	return users;
+}
+
+export function parseDmJsonUsersDocument(raw: unknown) {
+	if (Array.isArray(raw)) {
+		return parseDmJsonUsersList(raw, 0);
+	}
+	if (!isRecord(raw)) {
+		return { error: "users file must be a JSON array or object" };
+	}
+	if (Array.isArray(raw.users)) {
+		return parseDmJsonUsersList(raw.users, 0);
+	}
+	if (isRecord(raw.includes) && raw.includes.users !== undefined) {
+		return parseDmJsonUsersList(raw.includes.users, 0);
+	}
+	return { error: "users file must contain users or includes.users" };
+}
+
+function parseIncludesUsersFromEnvelope(
+	value: unknown,
+): XurlMentionUser[] | { error: string } | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		return { error: "input includes must be an object" };
+	}
+	if (value.users === undefined) return undefined;
+	return parseDmJsonUsersList(value.users, 0);
+}
+
+export async function readDmJsonUsersFromPath(pathValue: string) {
+	const input = await readFile(pathValue, "utf8");
+	const parsed = parseDmJsonUsersDocument(JSON.parse(input) as unknown);
+	if ("error" in parsed) {
+		throw new Error(parsed.error);
+	}
+	return parsed;
+}
+
+function applyDmJsonImportUsers(
+	db: Database,
+	accountSelector: string | undefined,
+	users: XurlMentionUser[],
+) {
+	if (users.length === 0) return;
+	const account = resolveLiveSyncAccount(db, accountSelector);
+	const updateTitle = db.prepare(`
+    update dm_conversations
+    set title = ?
+    where account_id = ? and participant_profile_id = ?
+  `);
+	for (const user of users) {
+		const { profile } = upsertProfileFromXUser(db, user);
+		updateTitle.run(
+			conversationTitleForImportedUser(user),
+			account.accountId,
+			profile.id,
+		);
+	}
+}
 
 function emptySkipCounts(): Record<DmJsonSkipReason, number> {
 	return {
@@ -222,6 +368,7 @@ export function classifyDecryptRow(
 function splitDecryptDocuments(input: string): {
 	rows: Array<{ line: number; raw: unknown }>;
 	errors: DmJsonImportError[];
+	includesUsers: XurlMentionUser[];
 } {
 	const trimmed = input.trim();
 	if (!trimmed) {
@@ -230,18 +377,37 @@ function splitDecryptDocuments(input: string): {
 	try {
 		const parsed: unknown = JSON.parse(trimmed);
 		if (isRecord(parsed) && Array.isArray(parsed.messages)) {
+			const includesUsers = parseIncludesUsersFromEnvelope(parsed.includes);
+			if (includesUsers && "error" in includesUsers) {
+				throw new Error(includesUsers.error);
+			}
 			return {
 				rows: parsed.messages.map((raw, index) => ({
 					line: index + 1,
 					raw,
 				})),
 				errors: [],
+				includesUsers: includesUsers ?? [],
 			};
 		}
 		if (isRecord(parsed)) {
-			return { rows: [{ line: 1, raw: parsed }], errors: [] };
+			const includesUsers = parseIncludesUsersFromEnvelope(parsed.includes);
+			if (includesUsers && "error" in includesUsers) {
+				throw new Error(includesUsers.error);
+			}
+			return {
+				rows: [{ line: 1, raw: parsed }],
+				errors: [],
+				includesUsers: includesUsers ?? [],
+			};
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("input includes")) {
+			throw error;
+		}
+		if (error instanceof Error && error.message.startsWith("Line ")) {
+			throw error;
+		}
 		// JSONL fallback
 	}
 	const rows: Array<{ line: number; raw: unknown }> = [];
@@ -263,7 +429,7 @@ function splitDecryptDocuments(input: string): {
 	if (rows.length === 0 && errors.length === 0) {
 		throw new Error("import input is empty");
 	}
-	return { rows, errors };
+	return { rows, errors, includesUsers: [] };
 }
 
 function buildInboxKindMap(
@@ -315,6 +481,7 @@ export interface DmJsonImportAuditEntry {
 		account?: string;
 		dryRun: boolean;
 		conversationsPath?: string;
+		usersPath?: string;
 	};
 	imported: number;
 	skipped: Record<DmJsonSkipReason, number>;
@@ -372,6 +539,8 @@ export async function importDmJsonText(
 		dryRun?: boolean;
 		logPath?: string;
 		conversationsPath?: string;
+		users?: XurlMentionUser[];
+		usersPath?: string;
 	},
 ): Promise<DmJsonImportResult> {
 	const run = startScheduledJobRun();
@@ -422,11 +591,22 @@ export async function importDmJsonText(
 	).length;
 	const newCount = events.length - existingCount;
 
+	const importedUsers = mergeUsersById(
+		options.users ?? [],
+		split.includesUsers,
+	);
+
 	if (events.length > 0) {
 		const payload: XurlDmEventsResponse = { data: events };
+		if (importedUsers.length > 0) {
+			payload.includes = { users: importedUsers };
+		}
 		mergeImportedXurlDmEventsIntoLocalStore(db, options.account, payload, {
 			conversationInboxKinds: buildInboxKindMap(events, options.conversations),
 		});
+	}
+	if (importedUsers.length > 0) {
+		applyDmJsonImportUsers(db, options.account, importedUsers);
 	}
 
 	result.imported = newCount;
@@ -446,6 +626,7 @@ export async function importDmJsonText(
 			...(options.conversationsPath
 				? { conversationsPath: options.conversationsPath }
 				: {}),
+			...(options.usersPath ? { usersPath: options.usersPath } : {}),
 		},
 		imported: result.imported,
 		skipped: result.skipped,
@@ -477,8 +658,15 @@ export async function importDmJsonFromPath(
 		conversationsPath?: string;
 		dryRun?: boolean;
 		logPath?: string;
+		usersPath?: string;
 	},
 ): Promise<DmJsonImportResult> {
 	const input = await readDmJsonImportInput(pathValue);
-	return importDmJsonText(db, input, options);
+	const users = options.usersPath
+		? await readDmJsonUsersFromPath(options.usersPath)
+		: undefined;
+	return importDmJsonText(db, input, {
+		...options,
+		...(users ? { users } : {}),
+	});
 }

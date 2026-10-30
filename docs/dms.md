@@ -60,7 +60,7 @@ birdclaw import dm-json ./exports/decrypt.json --account acct_owner --json
 cat decrypt.jsonl | birdclaw import dm-json - --account acct_owner --conversations ./conversations.json --json
 ```
 
-Input is helper `decrypt` output (`messages[]`) or JSONL with one row per line. Optional `--conversations` supplies `participant_ids` and `inbox_kind` (`accepted` or `request`) keyed by conversation id.
+Input is helper `decrypt` output (`messages[]`) or JSONL with one row per line. Optional `--conversations` supplies `participant_ids` and `inbox_kind` (`accepted` or `request`) keyed by conversation id. Optional `--users` (or `includes.users` in the import JSON) accepts offline X API v2 user objects (`id`, `username`, `name`, optional `profile_image_url` and `public_metrics`) so stub and archive placeholder DM profiles upgrade without network access.
 
 **v1 skips (counted in the summary, not stored):**
 

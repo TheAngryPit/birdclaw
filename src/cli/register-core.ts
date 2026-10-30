@@ -404,6 +404,10 @@ export function registerCoreCommands({
 			"JSON map of conversation_id to participant_ids and inbox_kind",
 		)
 		.option(
+			"--users <path>",
+			"JSON file of X API v2 users (array, users[], or includes.users)",
+		)
+		.option(
 			"--dry-run",
 			"Validate and summarize without writing to the database",
 		)
@@ -427,6 +431,7 @@ export function registerCoreCommands({
 				conversationsPath: options.conversations,
 				dryRun: Boolean(options.dryRun),
 				logPath: options.log,
+				usersPath: options.users,
 			});
 			if (!options.dryRun) {
 				await autoSyncAfterWrite();

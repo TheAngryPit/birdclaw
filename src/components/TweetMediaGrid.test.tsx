@@ -47,6 +47,10 @@ describe("TweetMediaGrid", () => {
 			"src",
 			"https://example.com/one-thumb.jpg",
 		);
+		expect(screen.getByAltText("Tweet media 1")).toHaveAttribute(
+			"referrerPolicy",
+			"no-referrer",
+		);
 		expect(container.querySelector("video source")).toHaveAttribute(
 			"src",
 			"https://example.com/two.mp4",
@@ -80,6 +84,10 @@ describe("TweetMediaGrid", () => {
 		expect(screen.getByRole("img", { name: "Tweet media" })).toHaveAttribute(
 			"src",
 			"https://example.com/one.jpg",
+		);
+		expect(screen.getByRole("img", { name: "Tweet media" })).toHaveAttribute(
+			"referrerPolicy",
+			"no-referrer",
 		);
 	});
 
@@ -317,6 +325,32 @@ describe("TweetMediaGrid", () => {
 			"src",
 			"https://video.twimg.com/clip.m3u8",
 		);
+	});
+
+	it("strips referrer from every tweet-media image surface", () => {
+		const { container } = render(
+			<TweetMediaGrid
+				items={[
+					{
+						url: "https://pbs.twimg.com/media/photo.jpg",
+						type: "image",
+						thumbnailUrl: "https://pbs.twimg.com/media/photo.jpg",
+					},
+					{
+						url: "https://pbs.twimg.com/ext_tw_video_thumb/poster.jpg",
+						type: "video",
+						thumbnailUrl: "https://pbs.twimg.com/ext_tw_video_thumb/poster.jpg",
+					},
+				]}
+			/>,
+		);
+
+		for (const image of container.querySelectorAll("img.tweet-media-image")) {
+			expect(image).toHaveAttribute("referrerPolicy", "no-referrer");
+		}
+		expect(
+			container.querySelector('img[src*="ext_tw_video_thumb"]'),
+		).toHaveAttribute("referrerPolicy", "no-referrer");
 	});
 
 	it("closes the inline viewer from the close button", () => {
