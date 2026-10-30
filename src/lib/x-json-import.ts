@@ -12,6 +12,8 @@ import type {
 } from "./types";
 
 const TWEET_ID_PATTERN = /^\d{1,20}$/;
+const X_USER_ID_PATTERN = /^[0-9]+$/;
+const REFERENCED_TWEET_TYPES = new Set(["quoted", "replied_to", "retweeted"]);
 const GROKBOT_SOURCE = "grokbot";
 const PUBLIC_ACCOUNT_ID = "public";
 
@@ -169,6 +171,13 @@ function normalizeTweetData(
 	}
 	const authorId = readStringField(rest, "author_id", line, "tweet.author_id");
 	if (typeof authorId !== "string") return authorId;
+	if (!X_USER_ID_PATTERN.test(authorId)) {
+		return {
+			error: `Line ${String(line)}: tweet.author_id must be a numeric string`,
+		};
+	}
+	const referenced = normalizeReferencedTweets(rest, line);
+	if ("error" in referenced) return referenced;
 	const text = readStringField(rest, "text", line, "tweet.text");
 	if (typeof text !== "string") return text;
 	const createdAt = readStringField(
@@ -189,6 +198,39 @@ function normalizeTweetData(
 	};
 }
 
+function normalizeReferencedTweets(
+	record: JsonRecord,
+	line: number,
+): { ok: true } | { error: string } {
+	const value = record.referenced_tweets;
+	if (value === undefined) return { ok: true };
+	if (!Array.isArray(value)) {
+		return {
+			error: `Line ${String(line)}: tweet.referenced_tweets must be an array`,
+		};
+	}
+	for (const entry of value) {
+		if (!isRecord(entry)) {
+			return {
+				error: `Line ${String(line)}: tweet.referenced_tweets entries must be objects`,
+			};
+		}
+		const type = entry.type;
+		if (typeof type !== "string" || !REFERENCED_TWEET_TYPES.has(type)) {
+			return {
+				error: `Line ${String(line)}: tweet.referenced_tweets.type must be quoted, replied_to, or retweeted`,
+			};
+		}
+		const refId = entry.id;
+		if (typeof refId !== "string" || !TWEET_ID_PATTERN.test(refId.trim())) {
+			return {
+				error: `Line ${String(line)}: tweet.referenced_tweets.id must be a numeric string (1-20 digits)`,
+			};
+		}
+	}
+	return { ok: true };
+}
+
 function normalizeUser(
 	value: unknown,
 	line: number,
@@ -200,6 +242,11 @@ function normalizeUser(
 	}
 	const id = readStringField(value, "id", line, "user.id");
 	if (typeof id !== "string") return id;
+	if (!X_USER_ID_PATTERN.test(id)) {
+		return {
+			error: `Line ${String(line)}: user.id must be a numeric string`,
+		};
+	}
 	const username = readStringField(value, "username", line, "user.username");
 	if (typeof username !== "string") return username;
 	const name = readStringField(value, "name", line, "user.name");
@@ -396,12 +443,11 @@ function splitInputDocuments(input: string): {
 	documents: Array<{ line: number; raw: unknown }>;
 	errors: XJsonImportError[];
 } {
-	const trimmed = input.trim();
-	if (!trimmed) {
+	if (!input.trim()) {
 		throw new Error("import input is empty");
 	}
 	try {
-		const parsed: unknown = JSON.parse(trimmed);
+		const parsed: unknown = JSON.parse(input.trim());
 		if (isRecord(parsed)) {
 			return { documents: [{ line: 1, raw: parsed }], errors: [] };
 		}
@@ -411,7 +457,7 @@ function splitInputDocuments(input: string): {
 	const documents: Array<{ line: number; raw: unknown }> = [];
 	const errors: XJsonImportError[] = [];
 	let lineNumber = 0;
-	for (const line of trimmed.split(/\r?\n/u)) {
+	for (const line of input.split(/\r?\n/u)) {
 		lineNumber += 1;
 		const slice = line.trim();
 		if (!slice) continue;
@@ -508,7 +554,9 @@ function processDocument(
 		result.errors.push({ line: document.line, message: normalized.error });
 		return;
 	}
-	const primaryIds = normalized.payload.data.map((tweet) => tweet.id);
+	const primaryIds = [
+		...new Set(normalized.payload.data.map((tweet) => tweet.id)),
+	];
 	if (mode === "validate") {
 		result.imported += primaryIds.length;
 		return;

@@ -59,6 +59,12 @@ birdclaw import x-json ./exports/grok-tweets.jsonl --json
 cat grok-tweets.jsonl | birdclaw import x-json - --json
 ```
 
+The import path itself does not call X or FxTwitter. Like other data-changing commands, a successful import still runs backup auto-sync when that preference is enabled, which can reconcile Git history and push your configured backup remote. For a strictly offline run with auto-sync disabled for one process:
+
+```bash
+BIRDCLAW_BACKUP_AUTO_SYNC=0 birdclaw import x-json ./exports/tweets.jsonl --json
+```
+
 The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are rejected whole; re-importing the same tweet ids is idempotent.
 
 ## Grok Bot GitHub issue inbox (Mac)
