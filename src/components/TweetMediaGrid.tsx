@@ -51,6 +51,7 @@ export function TweetMediaGrid({
 						)}
 						height={singleImage.height}
 						loading="lazy"
+						referrerPolicy="no-referrer"
 						src={singleImage.thumbnailUrl ?? singleImage.url}
 						width={singleImage.width}
 					/>
@@ -92,6 +93,7 @@ export function TweetMediaGrid({
 										alt={item.altText ?? `Tweet media ${String(index + 1)}`}
 										className="tweet-media-image block size-full object-contain"
 										loading="lazy"
+										referrerPolicy="no-referrer"
 										src={item.thumbnailUrl ?? item.url}
 									/>
 								) : (
@@ -130,6 +132,7 @@ export function TweetMediaGrid({
 							alt={selectedItem.altText ?? "Tweet media"}
 							className="max-h-[92vh] max-w-[92vw] object-contain"
 							onClick={(event) => event.stopPropagation()}
+							referrerPolicy="no-referrer"
 							src={selectedItem.url}
 						/>
 					) : (
@@ -303,8 +306,9 @@ function TweetVideo({
 						<img
 							alt=""
 							className="absolute inset-0 size-full object-contain opacity-45"
-							src={poster}
 							loading="lazy"
+							referrerPolicy="no-referrer"
+							src={poster}
 						/>
 					) : null}
 					<div className="relative flex flex-col items-center gap-3 p-4 text-center text-white">

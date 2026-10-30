@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -12,6 +13,7 @@ import {
 	parseDmJsonConversationsFile,
 	validateDmJsonImport,
 } from "./dm-json-import";
+import { buildExternalProfileId } from "./x-profile";
 import { useTestHome } from "../test/test-home";
 
 const testHome = useTestHome({
@@ -25,6 +27,68 @@ const GROUP_X_ID = "910102";
 const ACCOUNT_ID = "acct_dm_synth";
 const CONVERSATION_RAW = "9001:abc";
 const CONVERSATION_ID = normalizeDecryptConversationId(CONVERSATION_RAW);
+const PEER_HANDLE = "peer_synth_handle";
+const PEER_NAME = "Peer Synth Name";
+const PEER_FOLLOWERS = 4242;
+
+function syntheticPeerUser() {
+	return {
+		id: PEER_X_ID,
+		username: PEER_HANDLE,
+		name: PEER_NAME,
+		public_metrics: {
+			followers_count: PEER_FOLLOWERS,
+			following_count: 42,
+		},
+	};
+}
+
+function seedArchivePlaceholderProfile(
+	db: ReturnType<typeof testHome>["db"],
+	externalUserId: string,
+) {
+	const profileId = buildExternalProfileId(externalUserId);
+	db.prepare(
+		`insert into profiles (
+      id, handle, display_name, bio, followers_count, following_count,
+      public_metrics_json, avatar_hue, avatar_url, entities_json, raw_json, created_at
+    ) values (?, ?, ?, '', 0, 0, '{}', 1, null, '{}', ?, ?)`,
+	).run(
+		profileId,
+		`id${externalUserId}`,
+		`id${externalUserId}`,
+		JSON.stringify({ id: externalUserId }),
+		"2026-01-01T00:00:00.000Z",
+	);
+	return profileId;
+}
+
+function readProfile(
+	db: ReturnType<typeof testHome>["db"],
+	externalUserId: string,
+) {
+	return db
+		.prepare(
+			`select handle, display_name, followers_count
+       from profiles where id = ?`,
+		)
+		.get(buildExternalProfileId(externalUserId)) as {
+		handle: string;
+		display_name: string;
+		followers_count: number;
+	};
+}
+
+function readConversationTitle(
+	db: ReturnType<typeof testHome>["db"],
+	conversationId: string,
+) {
+	return (
+		db
+			.prepare("select title from dm_conversations where id = ?")
+			.get(conversationId) as { title: string } | undefined
+	)?.title;
+}
 
 function seedDmImportAccount(db: ReturnType<typeof testHome>["db"]) {
 	db.prepare(
@@ -247,5 +311,126 @@ describe("import dm-json", () => {
 				Object.defineProperty(process, "stdin", stdinDescriptor);
 			}
 		}
+	});
+});
+
+describe("import dm-json optional users", () => {
+	it("upgrades stub and archive placeholder profiles and refreshes titles", async () => {
+		const home = testHome();
+		const db = home.db;
+		seedDmImportAccount(db);
+		await importDmJsonText(
+			db,
+			JSON.stringify({
+				messages: [messageRow({ id: "880040", text: "synth dm with users" })],
+			}),
+			{ account: ACCOUNT_ID, conversations: conversationsMap() },
+		);
+		expect(readProfile(db, PEER_X_ID).handle).toMatch(/^birdclaw_stub_/);
+
+		seedArchivePlaceholderProfile(db, "910103");
+		const archiveConversationId =
+			normalizeDecryptConversationId("9002:archive");
+		const archiveProfileId = buildExternalProfileId("910103");
+		db.prepare(
+			`insert into dm_conversations (
+        id, account_id, participant_profile_id, title, last_message_at, unread_count, needs_reply
+      ) values (?, ?, ?, ?, ?, 0, 0)`,
+		).run(
+			archiveConversationId,
+			ACCOUNT_ID,
+			archiveProfileId,
+			"id910103",
+			"2026-01-02T00:00:00.000Z",
+		);
+
+		await importDmJsonText(db, JSON.stringify({ messages: [] }), {
+			account: ACCOUNT_ID,
+			users: [
+				syntheticPeerUser(),
+				{
+					id: "910103",
+					username: "archive_peer_handle",
+					name: "Archive Peer Synth",
+					public_metrics: { followers_count: 9001 },
+				},
+			],
+		});
+		expect(readProfile(db, PEER_X_ID)).toMatchObject({
+			handle: PEER_HANDLE,
+			display_name: PEER_NAME,
+			followers_count: PEER_FOLLOWERS,
+		});
+		expect(readConversationTitle(db, CONVERSATION_ID)).toBe(PEER_HANDLE);
+		expect(readProfile(db, "910103")).toMatchObject({
+			handle: "archive_peer_handle",
+			display_name: "Archive Peer Synth",
+			followers_count: 9001,
+		});
+		expect(readConversationTitle(db, archiveConversationId)).toBe(
+			"archive_peer_handle",
+		);
+	});
+
+	it("supports a users-only pass with no messages", async () => {
+		const home = testHome();
+		const db = home.db;
+		seedDmImportAccount(db);
+		const profileId = seedArchivePlaceholderProfile(db, PEER_X_ID);
+		db.prepare(
+			`insert into dm_conversations (
+        id, account_id, participant_profile_id, title, last_message_at, unread_count, needs_reply
+      ) values (?, ?, ?, ?, ?, 0, 0)`,
+		).run(
+			CONVERSATION_ID,
+			ACCOUNT_ID,
+			profileId,
+			`id${PEER_X_ID}`,
+			"2026-01-02T00:00:00.000Z",
+		);
+		await importDmJsonText(db, JSON.stringify({ messages: [] }), {
+			account: ACCOUNT_ID,
+			users: [syntheticPeerUser()],
+		});
+		expect(readProfile(db, PEER_X_ID)).toMatchObject({
+			handle: PEER_HANDLE,
+			display_name: PEER_NAME,
+			followers_count: PEER_FOLLOWERS,
+		});
+		expect(readConversationTitle(db, CONVERSATION_ID)).toBe(PEER_HANDLE);
+	});
+
+	it("leaves placeholder profiles unchanged when users are omitted", async () => {
+		const home = testHome();
+		const db = home.db;
+		seedDmImportAccount(db);
+		seedArchivePlaceholderProfile(db, PEER_X_ID);
+		await importDmJsonText(
+			db,
+			JSON.stringify({ messages: [messageRow({ id: "880050" })] }),
+			{ account: ACCOUNT_ID, conversations: conversationsMap() },
+		);
+		const afterImport = readProfile(db, PEER_X_ID);
+		expect(afterImport.handle).toBe(`id${PEER_X_ID}`);
+		await importDmJsonText(db, JSON.stringify({ messages: [] }), {
+			account: ACCOUNT_ID,
+		});
+		expect(readProfile(db, PEER_X_ID)).toEqual(afterImport);
+	});
+
+	it("loads users from a sidecar JSON file", async () => {
+		const home = testHome();
+		const db = home.db;
+		seedDmImportAccount(db);
+		seedArchivePlaceholderProfile(db, PEER_X_ID);
+		const usersPath = path.join(home.root, "peer-users.json");
+		writeFileSync(usersPath, JSON.stringify({ users: [syntheticPeerUser()] }));
+		const { readDmJsonUsersFromPath } = await import("./dm-json-import");
+		await importDmJsonText(db, JSON.stringify({ messages: [] }), {
+			account: ACCOUNT_ID,
+			usersPath,
+			users: await readDmJsonUsersFromPath(usersPath),
+		});
+		expect(readProfile(db, PEER_X_ID).handle).toBe(PEER_HANDLE);
 	});
 });
