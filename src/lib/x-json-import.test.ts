@@ -1,7 +1,11 @@
 // @vitest-environment node
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { runCliMain } from "../cli";
+import { exportBackup, importBackup } from "./backup";
 import { listTimelineItems } from "./timeline-read-model";
 import { importXJsonText } from "./x-json-import";
 import { useTestHome } from "../test/test-home";
@@ -175,6 +179,149 @@ describe("importXJsonText", () => {
 			skipped: 1,
 			errors: [],
 		});
+	});
+
+	it("rejects non-numeric author_id without aborting later valid lines", () => {
+		const home = testHome();
+		const db = home.db;
+		const bad = JSON.stringify({
+			data: {
+				id: "880060",
+				author_id: "abc",
+				text: "bad author",
+				created_at: "2026-03-01T12:00:00.000Z",
+			},
+		});
+		const good = JSON.stringify(singleTweetResponse({ id: "880061" }));
+		const result = importXJsonText(db, `${bad}\n${good}`);
+		expect(result.imported).toBe(1);
+		expect(result.errors).toEqual([
+			expect.objectContaining({
+				line: 1,
+				message: expect.stringContaining("author_id must be a numeric string"),
+			}),
+		]);
+		expect(
+			db.prepare("select id from tweets where id = ?").get("880061"),
+		).toEqual({ id: "880061" });
+		expect(
+			db.prepare("select id from tweets where id = ?").get("880060"),
+		).toBeUndefined();
+	});
+
+	it("rejects invalid referenced_tweets before ingestion", () => {
+		const home = testHome();
+		const db = home.db;
+		const result = importXJsonText(
+			db,
+			JSON.stringify({
+				data: {
+					id: "880070",
+					author_id: SYNTH_AUTHOR.id,
+					text: "broken reference",
+					created_at: "2026-03-01T12:00:00.000Z",
+					referenced_tweets: [{ type: "quoted", id: "not-a-tweet-id" }],
+				},
+				includes: { users: [SYNTH_AUTHOR] },
+			}),
+		);
+		expect(result.imported).toBe(0);
+		expect(result.errors[0]?.message).toContain("referenced_tweets.id");
+		expect(db.prepare("select count(*) as count from tweets").get()).toEqual({
+			count: 0,
+		});
+	});
+
+	it("counts distinct primary tweet ids when data repeats an id", () => {
+		const home = testHome();
+		const db = home.db;
+		const tweet = {
+			id: "880080",
+			author_id: SYNTH_AUTHOR.id,
+			text: "duplicate primary",
+			created_at: "2026-03-01T12:00:00.000Z",
+		};
+		const result = importXJsonText(
+			db,
+			JSON.stringify({
+				data: [tweet, { ...tweet }],
+				includes: { users: [SYNTH_AUTHOR] },
+			}),
+		);
+		expect(result).toMatchObject({ imported: 1, skipped: 0, errors: [] });
+		expect(db.prepare("select count(*) as count from tweets").get()).toEqual({
+			count: 1,
+		});
+	});
+
+	it("preserves original JSONL line numbers when leading lines are blank", () => {
+		const home = testHome();
+		const db = home.db;
+		const good = JSON.stringify(singleTweetResponse({ id: "880090" }));
+		const input = `\n\n${good}\n{not json}\n`;
+		const result = importXJsonText(db, input);
+		expect(result.imported).toBe(1);
+		expect(result.errors).toEqual([
+			{ line: 4, message: "Line 4: invalid JSON" },
+		]);
+	});
+});
+
+describe("importXJsonText backup compatibility", () => {
+	const populatedHome = useTestHome({
+		prefix: "birdclaw-x-json-backup-",
+		seedDemoData: true,
+	});
+
+	it("survives backup export and restore in a populated workspace", async () => {
+		const home = populatedHome();
+		const db = home.db;
+		const tweetsBefore = (
+			db.prepare("select count(*) as count from tweets").get() as {
+				count: number;
+			}
+		).count;
+		const importResult = importXJsonText(
+			db,
+			JSON.stringify(
+				singleTweetResponse({
+					id: "880100",
+					text: "backup needle",
+					url: "https://example.test/status/880100",
+				}),
+			),
+		);
+		expect(importResult.errors).toEqual([]);
+		expect(importResult.imported).toBe(1);
+		const tweetsAfterImport = (
+			db.prepare("select count(*) as count from tweets").get() as {
+				count: number;
+			}
+		).count;
+		expect(tweetsAfterImport).toBe(tweetsBefore + 1);
+
+		const backupRoot = mkdtempSync(
+			path.join(os.tmpdir(), "birdclaw-x-json-backup-repo-"),
+		);
+		await exportBackup({ repoPath: backupRoot, db });
+		home.switchHome("birdclaw-x-json-restored-");
+		await importBackup({ repoPath: backupRoot, mode: "replace" });
+		const restoredDb = home.db;
+		expect(
+			restoredDb.prepare("select count(*) as count from tweets").get(),
+		).toEqual({ count: tweetsAfterImport });
+		expect(
+			restoredDb
+				.prepare("select id, text from tweets where id = ?")
+				.get("880100"),
+		).toMatchObject({ id: "880100", text: "backup needle" });
+		expect(
+			restoredDb
+				.prepare(
+					"select source from tweet_sources where tweet_id = ? and source = ?",
+				)
+				.get("880100", "x-json"),
+		).toEqual({ source: "x-json" });
 	});
 });
 
