@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -770,14 +770,19 @@ describe("cli", () => {
 		expect(getQueryEnvelopeMock).toHaveBeenCalledWith({
 			includeArchives: false,
 		});
-		expect(runProductionServerMock).toHaveBeenCalledWith({
-			packageRoot: expect.stringContaining("birdclaw"),
-			host: "127.0.0.1",
-			port: 3000,
-			serverVersion: packageVersion,
-			json: false,
-			onListening: expect.any(Function),
-		});
+		expect(runProductionServerMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				host: "127.0.0.1",
+				port: 3000,
+				serverVersion: packageVersion,
+				json: false,
+				onListening: expect.any(Function),
+			}),
+		);
+		const [[serveCall]] = runProductionServerMock.mock.calls;
+		expect(
+			existsSync(path.join(String(serveCall.packageRoot), "package.json")),
+		).toBe(true);
 		expect(getNativeDbMock).toHaveBeenCalledWith({ seedDemoData: false });
 		expect(seedDemoDataMock).not.toHaveBeenCalled();
 	});
