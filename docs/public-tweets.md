@@ -52,7 +52,7 @@ Optional document-level fields align imports with `birdclaw sync` membership on 
 - `kind`: sync step name — `timeline`, `mentions`, `likes`, `bookmarks`, or `authored` (preferred), or the legacy aliases `home`, `bookmark`, `like`, `mention`, `authored`. When omitted, behavior is unchanged: tweets land on the `public` account with a `home` edge (existing GitHub inbox issues keep working).
 - `account`: handle or account id. When `kind` is set, Birdclaw resolves the owning account the same way sync does (`resolveLiveSyncAccount` / default account). Unknown accounts fail with a clear error.
 
-Grok Bot tool JSON is normalized before ingest: `includes.posts` → `includes.tweets`, `edit_history_post_ids` → `edit_history_tweet_ids`, `public_metrics.repost_count` → `retweet_count`, and per-tweet `url` stays provenance. Edges and collections use the same `ingestTweetPayload` paths as live sync (`home` / `mention` / `authored` edges; `bookmarks` / `likes` collections).
+Grok Bot tool JSON is normalized before ingest: `includes.posts` → `includes.tweets`, `edit_history_post_ids` → `edit_history_tweet_ids`, `public_metrics.repost_count` → `retweet_count`, and per-tweet `url` stays provenance. In `referenced_tweets`, `type: "reposted"` is accepted as an alias for `"retweeted"`. Edges and collections use the same `ingestTweetPayload` paths as live sync (`home` / `mention` / `authored` edges; `bookmarks` / `likes` collections).
 
 ```bash
 birdclaw import x-json ./exports/grok-tweets.jsonl --json

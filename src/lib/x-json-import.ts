@@ -216,10 +216,18 @@ function normalizeReferencedTweets(
 			};
 		}
 		const type = entry.type;
-		if (typeof type !== "string" || !REFERENCED_TWEET_TYPES.has(type)) {
+		const normalizedType =
+			typeof type === "string" && type === "reposted" ? "retweeted" : type;
+		if (
+			typeof normalizedType !== "string" ||
+			!REFERENCED_TWEET_TYPES.has(normalizedType)
+		) {
 			return {
-				error: `Line ${String(line)}: tweet.referenced_tweets.type must be quoted, replied_to, or retweeted`,
+				error: `Line ${String(line)}: tweet.referenced_tweets.type must be quoted, replied_to, retweeted, or reposted`,
 			};
+		}
+		if (normalizedType !== type) {
+			entry.type = normalizedType;
 		}
 		const refId = entry.id;
 		if (typeof refId !== "string" || !TWEET_ID_PATTERN.test(refId.trim())) {

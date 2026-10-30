@@ -69,6 +69,54 @@ function kindDocument(
 	};
 }
 
+function homeRetweetJsonlLine(
+	primaryId: string,
+	referenceType: string,
+	originalId = "881040",
+) {
+	return JSON.stringify({
+		kind: "home",
+		data: {
+			id: primaryId,
+			author_id: SYNTH_AUTHOR.id,
+			text: "RT synth repost needle",
+			created_at: "2026-03-01T12:00:00.000Z",
+			referenced_tweets: [{ type: referenceType, id: originalId }],
+		},
+		includes: {
+			users: [SYNTH_AUTHOR],
+			tweets: [
+				{
+					id: originalId,
+					author_id: SYNTH_AUTHOR.id,
+					text: "synth original repost target",
+					created_at: "2026-03-01T11:00:00.000Z",
+				},
+			],
+		},
+	});
+}
+
+function readHomeRetweetImport(db: Database, primaryId: string) {
+	return {
+		edge: db
+			.prepare(
+				"select account_id, kind, raw_json from tweet_account_edges where tweet_id = ?",
+			)
+			.get(primaryId) as
+			| { account_id: string; kind: string; raw_json: string }
+			| undefined,
+		timeline: listTimelineItems(
+			{
+				account: SYNTH_OWNER_ACCOUNT_ID,
+				resource: "home",
+				limit: 20,
+			},
+			db,
+		).find((row) => row.id === primaryId),
+	};
+}
+
 function singleTweetResponse(
 	overrides: {
 		id?: string;
@@ -477,6 +525,64 @@ describe("importXJsonText", () => {
 		expect(db.prepare("select count(*) as count from tweets").get()).toEqual({
 			count: 0,
 		});
+	});
+
+	it("normalizes referenced_tweets reposted to retweeted like canonical JSONL", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+
+		expect(
+			importXJsonText(db, `${homeRetweetJsonlLine("881110", "retweeted")}\n`),
+		).toMatchObject({ imported: 1, skipped: 0, errors: [] });
+		expect(
+			importXJsonText(db, `${homeRetweetJsonlLine("881111", "reposted")}\n`),
+		).toMatchObject({ imported: 1, skipped: 0, errors: [] });
+
+		const canonical = readHomeRetweetImport(db, "881110");
+		const aliased = readHomeRetweetImport(db, "881111");
+		expect(canonical.edge).toMatchObject({
+			account_id: SYNTH_OWNER_ACCOUNT_ID,
+			kind: "home",
+		});
+		expect(aliased.edge).toMatchObject({
+			account_id: SYNTH_OWNER_ACCOUNT_ID,
+			kind: "home",
+		});
+		expect(
+			JSON.parse(String(aliased.edge?.raw_json)).referenced_tweets,
+		).toEqual([{ type: "retweeted", id: "881040" }]);
+		expect(
+			JSON.parse(String(canonical.edge?.raw_json)).referenced_tweets,
+		).toEqual([{ type: "retweeted", id: "881040" }]);
+		expect(aliased.timeline?.retweetedTweet).toMatchObject({
+			id: "881040",
+			text: "synth original repost target",
+		});
+		expect(canonical.timeline?.retweetedTweet).toMatchObject({
+			id: "881040",
+			text: "synth original repost target",
+		});
+	});
+
+	it("rejects unknown referenced_tweets types as a per-line error", () => {
+		const home = testHome();
+		const db = home.db;
+		seedSynthOwnerAccount(db);
+		const result = importXJsonText(
+			db,
+			`${homeRetweetJsonlLine("881120", "repost")}\n`,
+		);
+		expect(result).toMatchObject({ imported: 0, skipped: 0 });
+		expect(result.errors).toEqual([
+			expect.objectContaining({
+				line: 1,
+				message: expect.stringContaining("referenced_tweets.type"),
+			}),
+		]);
+		expect(
+			db.prepare("select id from tweets where id = ?").get("881120"),
+		).toBeUndefined();
 	});
 
 	it("counts distinct primary tweet ids when data repeats an id", () => {
