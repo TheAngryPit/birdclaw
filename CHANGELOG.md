@@ -1,6 +1,25 @@
 # CHANGELOG
 
-## 0.16.4 - Unreleased
+## 0.17.1 - Unreleased
+
+- Refresh compatible query, CLI, icon, map, build, and test dependencies while preserving the Bun canary, Node floor, jsdom compatibility pin, and security overrides.
+- Reject unsafe Git index permissions before backup publication can change the live generation, and keep recovery index snapshots private.
+- Restore native web DM account verification by discovering the viewer query's current Relay variables and rediscovering stale metadata after HTTP 422. Thanks @rymalia (#256).
+- Honor bookmark job page caps and account aliases, allow small Bird authored batches, and restore cached timelines, collections, and mentions without overwriting newer profiles or observations. Thanks @saariuslystoned (#257, #261).
+- Keep tokenless searches and empty author filters from returning unrelated rows, and honor account selection in DM search and Inbox. Thanks @saariuslystoned (#258, #259).
+- Resolve account aliases consistently for composition, moderation, research collection flags, Link Insights, and web sync locks. Thanks @saariuslystoned (#259, #260, #263).
+- Reject invalid DM/List, moderation transport, backup schema/shard, and imported metric inputs before work; preserve valid zero-result reads and transport fallbacks. Thanks @saariuslystoned (#261, #262).
+- Exclude deleted and superseded tweets from MCP search bounds, honor reply metadata in original-only discussions, and report structured sync failures. Thanks @saariuslystoned (#263).
+- Validate search and analysis dates, limits, and handles before automatic updates; preserve cached whois, digest, and profile analysis reads in read-only deployments. Thanks @saariuslystoned (#264, #265).
+
+## 0.17.0 - 2026-11-05
+
+**Highlights:** Import saved X API JSON without live requests and recover media from real X archives.
+
+- Import saved X API v2 JSON or JSONL from files/stdin without live reads, with default-search visibility, idempotent ingestion, and empty display-name support. Thanks @TheAngryPit (#252).
+- Fix archive import extracting no media from real X archives, whose zip entries carry no Unix file-type bits and list as `?rw-------`; tweet, DM, and profile media now land in `media/originals/archive`. (#254 — thanks @rymalia)
+- Refresh compatible runtime and development dependencies while retaining the pinned Bun canary, Node 26 floor, jsdom compatibility pin, and security overrides.
+- Give the large timeline reconciliation regression its existing coverage timeout under ordinary runs too, preserving assertions and the global default (#253, thanks @rymalia).
 
 ## 0.16.3 - 2026-10-24
 

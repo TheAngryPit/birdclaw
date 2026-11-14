@@ -21,7 +21,12 @@ import {
 	importThreadViaFxTwitter,
 	importTweetsViaFxTwitter,
 } from "#/lib/fxtwitter";
+import {
+	importDmJsonFromPath,
+	readDmJsonConversationsMap,
+} from "#/lib/dm-json-import";
 import { hydrateProfilesFromX } from "#/lib/profile-hydration";
+import { importXJsonFromPath } from "#/lib/x-json-import";
 import {
 	createGhIssueRunner,
 	DEFAULT_GH_ISSUE_LIST_LIMIT,
@@ -29,11 +34,6 @@ import {
 	parseGithubRepo,
 	resolveImportAuthorPolicy,
 } from "#/lib/x-json-issue-import";
-import { importXJsonFromPath } from "#/lib/x-json-import";
-import {
-	importDmJsonFromPath,
-	readDmJsonConversationsMap,
-} from "#/lib/dm-json-import";
 import { getQueryEnvelope } from "#/lib/query-status";
 import { seedDemoData } from "#/lib/seed";
 import { printError, type CliCommandContext } from "./command-context";
@@ -382,7 +382,7 @@ export function registerCoreCommands({
 	importCommand
 		.command("x-json [file]")
 		.description(
-			"Import Grok Bot / X API v2 tweet JSON or JSONL from a file or stdin",
+			"Import offline X API v2 tweet JSON or JSONL from a file or stdin",
 		)
 		.action(async (file = "-") => {
 			const db = getNativeDb({ seedDemoData: false });

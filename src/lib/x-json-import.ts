@@ -1,20 +1,22 @@
 import { readFile } from "node:fs/promises";
-import { resolveLiveSyncAccount } from "./live-sync-engine";
 import type { TimelineCollectionKind } from "./api-enums";
-import type { TweetAccountEdgeKind } from "./tweet-account-edges";
+import { resolveLiveSyncAccount } from "./live-sync-engine";
 import type { Database } from "./sqlite";
+import type { TweetAccountEdgeKind } from "./tweet-account-edges";
 import { ingestTweetPayload } from "./tweet-repository";
 import type {
 	XurlMedia,
 	XurlMentionUser,
+	XurlPublicMetrics,
 	XurlTweetData,
 	XurlTweetsResponse,
 } from "./types";
+import { buildExternalProfileId } from "./x-profile";
 
 const TWEET_ID_PATTERN = /^\d{1,20}$/;
 const X_USER_ID_PATTERN = /^[0-9]+$/;
 const REFERENCED_TWEET_TYPES = new Set(["quoted", "replied_to", "retweeted"]);
-const GROKBOT_SOURCE = "grokbot";
+const X_JSON_IMPORT_SOURCE = "x-json";
 const PUBLIC_ACCOUNT_ID = "public";
 
 export const X_JSON_IMPORT_KINDS = [
@@ -72,6 +74,611 @@ export function xJsonImportKindToNativeStep(
 	}
 }
 
+export interface XJsonImportError {
+	line: number;
+	message: string;
+}
+
+export interface XJsonImportResult {
+	imported: number;
+	skipped: number;
+	errors: XJsonImportError[];
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+type ImportFieldError = { error: string };
+
+function isImportFieldError(value: unknown): value is ImportFieldError {
+	return isRecord(value) && typeof value.error === "string";
+}
+
+function validationError(line: number, message: string): ImportFieldError {
+	return { error: `Line ${String(line)}: ${message}` };
+}
+
+function validateNonEmptyString(
+	value: unknown,
+	line: number,
+	label: string,
+): true | ImportFieldError {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		return validationError(line, `${label} must be a non-empty string`);
+	}
+	return true;
+}
+
+function validateTrimmedPattern(
+	value: unknown,
+	line: number,
+	label: string,
+	pattern: RegExp,
+	invalidMessage: string,
+): true | ImportFieldError {
+	const check = validateNonEmptyString(value, line, label);
+	if (check !== true) return check;
+	if (!pattern.test(String(value).trim())) {
+		return validationError(line, invalidMessage);
+	}
+	return true;
+}
+
+function validateOptionalNumericUserId(
+	record: JsonRecord,
+	field: string,
+	line: number,
+	label: string,
+): true | ImportFieldError {
+	const raw = record[field];
+	if (raw === undefined) return true;
+	return validateTrimmedPattern(
+		raw,
+		line,
+		label,
+		X_USER_ID_PATTERN,
+		`${label} must be a numeric string`,
+	);
+}
+
+const PUBLIC_METRIC_FIELDS = [
+	"retweet_count",
+	"reply_count",
+	"like_count",
+	"quote_count",
+	"bookmark_count",
+	"impression_count",
+	"followers_count",
+	"following_count",
+	"tweet_count",
+	"listed_count",
+] as const satisfies ReadonlyArray<keyof XurlPublicMetrics>;
+
+function validateMetricCount(
+	record: JsonRecord,
+	field: (typeof PUBLIC_METRIC_FIELDS)[number],
+	line: number,
+	label: string,
+): true | ImportFieldError {
+	const value = record[field];
+	if (value === undefined) return true;
+	if (
+		typeof value === "number" ||
+		(typeof value === "string" && value.trim().length > 0)
+	) {
+		const count = Number(value);
+		if (Number.isSafeInteger(count) && count >= 0) return true;
+	}
+	return validationError(
+		line,
+		`${label}.${field} must be a non-negative integer`,
+	);
+}
+
+function validateEntityArray(
+	value: unknown,
+	line: number,
+	label: string,
+): true | ImportFieldError {
+	if (value === undefined) return true;
+	if (!Array.isArray(value)) {
+		return validationError(line, `${label} must be an array`);
+	}
+	for (const entry of value) {
+		if (!isRecord(entry)) {
+			return validationError(line, `${label} entries must be objects`);
+		}
+	}
+	return true;
+}
+
+function validateEntities(
+	value: unknown,
+	line: number,
+): true | ImportFieldError {
+	if (value === undefined) return true;
+	if (!isRecord(value)) {
+		return validationError(line, "tweet.entities must be an object");
+	}
+	for (const result of [
+		validateEntityArray(value.urls, line, "tweet.entities.urls"),
+		validateEntityArray(value.mentions, line, "tweet.entities.mentions"),
+		validateEntityArray(value.hashtags, line, "tweet.entities.hashtags"),
+	]) {
+		if (result !== true) return result;
+	}
+	if (value.article !== undefined && !isRecord(value.article)) {
+		return validationError(line, "tweet.entities.article must be an object");
+	}
+	return true;
+}
+
+function validatePublicMetrics(
+	value: unknown,
+	line: number,
+	label = "tweet.public_metrics",
+	fields: ReadonlyArray<
+		(typeof PUBLIC_METRIC_FIELDS)[number]
+	> = PUBLIC_METRIC_FIELDS,
+): true | ImportFieldError {
+	if (value === undefined) return true;
+	if (!isRecord(value)) {
+		return validationError(line, `${label} must be an object`);
+	}
+	for (const field of fields) {
+		const result = validateMetricCount(value, field, line, label);
+		if (result !== true) return result;
+	}
+	return true;
+}
+
+function validateReferencedTweets(
+	record: JsonRecord,
+	line: number,
+): true | ImportFieldError {
+	const value = record.referenced_tweets;
+	if (value === undefined) return true;
+	if (!Array.isArray(value)) {
+		return validationError(line, "tweet.referenced_tweets must be an array");
+	}
+	for (const entry of value) {
+		if (!isRecord(entry)) {
+			return validationError(
+				line,
+				"tweet.referenced_tweets entries must be objects",
+			);
+		}
+		const type = entry.type === "reposted" ? "retweeted" : entry.type;
+		if (typeof type !== "string" || !REFERENCED_TWEET_TYPES.has(type)) {
+			return validationError(
+				line,
+				"tweet.referenced_tweets.type must be quoted, replied_to, retweeted, or reposted",
+			);
+		}
+		const refIdCheck = validateTrimmedPattern(
+			entry.id,
+			line,
+			"tweet.referenced_tweets.id",
+			TWEET_ID_PATTERN,
+			"tweet.referenced_tweets.id must be a numeric string (1-20 digits)",
+		);
+		if (refIdCheck !== true) return refIdCheck;
+	}
+	return true;
+}
+
+function validateNoteTweet(
+	value: unknown,
+	line: number,
+): true | ImportFieldError {
+	if (value === undefined) return true;
+	if (!isRecord(value)) {
+		return validationError(line, "tweet.note_tweet must be an object");
+	}
+	return validateNonEmptyString(value.text, line, "tweet.note_tweet.text");
+}
+
+function validateAttachments(
+	value: unknown,
+	line: number,
+): true | ImportFieldError {
+	if (value === undefined) return true;
+	if (!isRecord(value)) {
+		return validationError(line, "tweet.attachments must be an object");
+	}
+	if (value.media_keys !== undefined) {
+		if (!Array.isArray(value.media_keys)) {
+			return validationError(
+				line,
+				"tweet.attachments.media_keys must be an array",
+			);
+		}
+		for (const key of value.media_keys) {
+			if (typeof key !== "string" || key.trim().length === 0) {
+				return validationError(
+					line,
+					"tweet.attachments.media_keys entries must be non-empty strings",
+				);
+			}
+		}
+	}
+	if (value.poll_ids !== undefined && !Array.isArray(value.poll_ids)) {
+		return validationError(line, "tweet.attachments.poll_ids must be an array");
+	}
+	return true;
+}
+
+function validateMediaItem(
+	item: JsonRecord,
+	line: number,
+): true | ImportFieldError {
+	for (const result of [
+		validateNonEmptyString(item.media_key, line, "media.media_key"),
+		validateNonEmptyString(item.type, line, "media.type"),
+	]) {
+		if (result !== true) return result;
+	}
+	if (item.variants !== undefined && !Array.isArray(item.variants)) {
+		return validationError(line, "media.variants must be an array");
+	}
+	return true;
+}
+
+function validateUser(value: unknown, line: number): true | ImportFieldError {
+	if (!isRecord(value)) {
+		return validationError(line, "includes.users entries must be objects");
+	}
+	for (const result of [
+		validateTrimmedPattern(
+			value.id,
+			line,
+			"user.id",
+			X_USER_ID_PATTERN,
+			"user.id must be a numeric string",
+		),
+		validateNonEmptyString(value.username, line, "user.username"),
+		validatePublicMetrics(value.public_metrics, line, "user.public_metrics", [
+			"followers_count",
+			"following_count",
+			"tweet_count",
+			"listed_count",
+		]),
+	]) {
+		if (result !== true) return result;
+	}
+	if (typeof value.name !== "string") {
+		return validationError(line, "user.name must be a string");
+	}
+	return true;
+}
+
+function forwardUser(record: JsonRecord): XurlMentionUser {
+	return { ...record, id: String(record.id).trim() } as XurlMentionUser;
+}
+
+function forwardTweetFromRecord(record: JsonRecord): XurlTweetData {
+	const { url: _ignored, ...rest } = record;
+	const tweet = { ...rest } as unknown as XurlTweetData;
+	tweet.id = String(record.id).trim();
+	tweet.author_id = String(record.author_id).trim();
+	if (Array.isArray(record.referenced_tweets)) {
+		tweet.referenced_tweets = record.referenced_tweets.map((entry) => {
+			if (!isRecord(entry)) return entry;
+			const type = entry.type === "reposted" ? "retweeted" : entry.type;
+			return { ...entry, id: String(entry.id).trim(), type };
+		}) as XurlTweetData["referenced_tweets"];
+	}
+	if (typeof record.in_reply_to_user_id === "string") {
+		tweet.in_reply_to_user_id = record.in_reply_to_user_id.trim();
+	}
+	if (typeof record.conversation_id === "string") {
+		tweet.conversation_id = record.conversation_id.trim();
+	}
+	return tweet;
+}
+
+function validateTweetRecord(
+	record: JsonRecord,
+	line: number,
+): { sourceUrl?: string } | ImportFieldError {
+	const sourceUrl =
+		typeof record.url === "string" && record.url.trim().length > 0
+			? record.url.trim()
+			: undefined;
+	const checks: Array<true | ImportFieldError> = [
+		validateTrimmedPattern(
+			record.id,
+			line,
+			"tweet.id",
+			TWEET_ID_PATTERN,
+			"tweet id must be a numeric string (1-20 digits)",
+		),
+		validateTrimmedPattern(
+			record.author_id,
+			line,
+			"tweet.author_id",
+			X_USER_ID_PATTERN,
+			"tweet.author_id must be a numeric string",
+		),
+		validateReferencedTweets(record, line),
+		validateNonEmptyString(record.text, line, "tweet.text"),
+		validateNonEmptyString(record.created_at, line, "tweet.created_at"),
+		validateNoteTweet(record.note_tweet, line),
+		validateAttachments(record.attachments, line),
+		validateOptionalNumericUserId(
+			record,
+			"in_reply_to_user_id",
+			line,
+			"tweet.in_reply_to_user_id",
+		),
+		validateOptionalNumericUserId(
+			record,
+			"conversation_id",
+			line,
+			"tweet.conversation_id",
+		),
+		validateEntities(record.entities, line),
+		validatePublicMetrics(record.public_metrics, line),
+	];
+	for (const check of checks) {
+		if (check !== true) return check;
+	}
+	if (Number.isNaN(Date.parse(String(record.created_at).trim()))) {
+		return validationError(line, "tweet.created_at must be a valid timestamp");
+	}
+	return { sourceUrl };
+}
+
+function validateAndForwardIncludes(
+	value: unknown,
+	line: number,
+): XurlTweetsResponse["includes"] | ImportFieldError | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		return validationError(line, "includes must be an object");
+	}
+	const includes: XurlTweetsResponse["includes"] = {};
+	if (value.users !== undefined) {
+		if (!Array.isArray(value.users)) {
+			return validationError(line, "includes.users must be an array");
+		}
+		const users: XurlMentionUser[] = [];
+		for (const user of value.users) {
+			const check = validateUser(user, line);
+			if (check !== true) return check;
+			users.push(forwardUser(user as JsonRecord));
+		}
+		includes.users = users;
+	}
+	if (value.tweets !== undefined) {
+		if (!Array.isArray(value.tweets)) {
+			return validationError(line, "includes.tweets must be an array");
+		}
+		const tweets: XurlTweetData[] = [];
+		for (const tweet of value.tweets) {
+			if (!isRecord(tweet)) {
+				return validationError(line, "includes.tweets entries must be objects");
+			}
+			const validated = validateTweetRecord(tweet, line);
+			if (isImportFieldError(validated)) return validated;
+			tweets.push(forwardTweetFromRecord(tweet));
+		}
+		includes.tweets = tweets;
+	}
+	if (value.media !== undefined) {
+		if (!Array.isArray(value.media)) {
+			return validationError(line, "includes.media must be an array");
+		}
+		const mediaItems: XurlMedia[] = [];
+		for (const item of value.media) {
+			if (!isRecord(item)) {
+				return validationError(line, "includes.media entries must be objects");
+			}
+			const check = validateMediaItem(item, line);
+			if (check !== true) return check;
+			mediaItems.push(item as unknown as XurlMedia);
+		}
+		includes.media = mediaItems;
+	}
+	return includes;
+}
+
+function normalizeDocument(
+	raw: unknown,
+	line: number,
+):
+	| { payload: XurlTweetsResponse; sourceUrlByTweetId: Map<string, string> }
+	| { error: string } {
+	if (!isRecord(raw)) {
+		return { error: `Line ${String(line)}: expected a JSON object` };
+	}
+	if (raw.data === undefined) {
+		return { error: `Line ${String(line)}: missing data` };
+	}
+	const dataItems = Array.isArray(raw.data) ? raw.data : [raw.data];
+	if (dataItems.length === 0) {
+		return { error: `Line ${String(line)}: data must not be empty` };
+	}
+	const data: XurlTweetData[] = [];
+	const sourceUrlByTweetId = new Map<string, string>();
+	for (const item of dataItems) {
+		if (!isRecord(item)) {
+			return {
+				error: `Line ${String(line)}: each data tweet must be an object`,
+			};
+		}
+		const validated = validateTweetRecord(item, line);
+		if (isImportFieldError(validated)) return validated;
+		const tweet = forwardTweetFromRecord(item);
+		data.push(tweet);
+		if (validated.sourceUrl) {
+			sourceUrlByTweetId.set(tweet.id, validated.sourceUrl);
+		}
+	}
+	const includes = validateAndForwardIncludes(raw.includes, line);
+	if (isImportFieldError(includes)) return includes;
+	return {
+		payload: {
+			data,
+			...(includes ? { includes } : {}),
+			...(raw.meta && isRecord(raw.meta) ? { meta: raw.meta } : {}),
+		},
+		sourceUrlByTweetId,
+	};
+}
+
+function splitInputDocuments(input: string): {
+	documents: Array<{ line: number; raw: unknown }>;
+	errors: XJsonImportError[];
+} {
+	if (!input.trim()) {
+		throw new Error("import input is empty");
+	}
+	try {
+		const parsed: unknown = JSON.parse(input.trim());
+		if (isRecord(parsed)) {
+			return { documents: [{ line: 1, raw: parsed }], errors: [] };
+		}
+	} catch {
+		// Fall through to JSONL parsing.
+	}
+	const documents: Array<{ line: number; raw: unknown }> = [];
+	const errors: XJsonImportError[] = [];
+	let lineNumber = 0;
+	for (const line of input.split(/\r?\n/u)) {
+		lineNumber += 1;
+		const slice = line.trim();
+		if (!slice) continue;
+		try {
+			documents.push({ line: lineNumber, raw: JSON.parse(slice) as unknown });
+		} catch {
+			errors.push({
+				line: lineNumber,
+				message: `Line ${String(lineNumber)}: invalid JSON`,
+			});
+		}
+	}
+	if (documents.length === 0 && errors.length === 0) {
+		throw new Error("import input is empty");
+	}
+	return { documents, errors };
+}
+
+function profileExistsForXUser(db: Database, userId: string) {
+	return Boolean(
+		db
+			.prepare("select 1 as ok from profiles where id = ?")
+			.get(buildExternalProfileId(String(userId).trim())),
+	);
+}
+
+function storedProfileColumns(db: Database, userId: string) {
+	return db
+		.prepare(
+			`select bio, followers_count, following_count, public_metrics_json
+       from profiles where id = ?`,
+		)
+		.get(buildExternalProfileId(String(userId).trim())) as
+		| {
+				bio: string;
+				followers_count: number;
+				following_count: number | null;
+				public_metrics_json: string | null;
+		  }
+		| undefined;
+}
+
+function mergeIncludedUserWithStoredProfile(
+	db: Database,
+	user: XurlMentionUser,
+): XurlMentionUser {
+	if (!profileExistsForXUser(db, user.id)) return user;
+	const stored = storedProfileColumns(db, user.id);
+	if (!stored) return user;
+	const incoming = user as unknown as JsonRecord;
+	const merged: JsonRecord = { ...incoming, id: String(user.id).trim() };
+	if (!Object.hasOwn(incoming, "description")) {
+		merged.description = stored.bio;
+	}
+	let metrics: JsonRecord = {};
+	if (stored.public_metrics_json) {
+		try {
+			const parsed: unknown = JSON.parse(stored.public_metrics_json);
+			if (isRecord(parsed)) metrics = { ...parsed };
+		} catch {
+			metrics = {};
+		}
+	}
+	metrics.followers_count = stored.followers_count;
+	if (stored.following_count !== null)
+		metrics.following_count = stored.following_count;
+	merged.public_metrics = {
+		...metrics,
+		...(isRecord(incoming.public_metrics) ? incoming.public_metrics : {}),
+	};
+
+	return merged as unknown as XurlMentionUser;
+}
+
+function payloadForIngest(
+	db: Database,
+	payload: XurlTweetsResponse,
+): XurlTweetsResponse {
+	const users = payload.includes?.users;
+	const mergedUsers = users?.map((user) =>
+		mergeIncludedUserWithStoredProfile(db, user),
+	);
+	function mergeTweet(tweet: XurlTweetData): XurlTweetData {
+		const stored = db
+			.prepare("select like_count, entities_json from tweets where id = ?")
+			.get(tweet.id) as
+			| { like_count: number; entities_json: string }
+			| undefined;
+		if (!stored) return tweet;
+		return {
+			...tweet,
+			public_metrics: {
+				like_count: stored.like_count,
+				...tweet.public_metrics,
+			},
+			entities: tweet.entities ?? JSON.parse(stored.entities_json),
+		};
+	}
+	return {
+		...payload,
+		data: payload.data.map(mergeTweet),
+		includes: payload.includes
+			? {
+					...payload.includes,
+					users: mergedUsers,
+					tweets: payload.includes.tweets?.map(mergeTweet),
+				}
+			: undefined,
+	};
+}
+
+function ensurePublicImportAccount(db: Database) {
+	db.prepare(
+		`insert or ignore into accounts (
+      id, name, handle, transport, is_default, created_at
+    ) values (?, 'Public imports', '@public', 'archive', 0, ?)`,
+	).run(PUBLIC_ACCOUNT_ID, new Date().toISOString());
+}
+
+function tweetExists(db: Database, tweetId: string) {
+	return Boolean(
+		db.prepare("select 1 as ok from tweets where id = ?").get(tweetId),
+	);
+}
+
+interface XJsonDocumentMetadata {
+	kind?: XJsonImportKind;
+	account?: string;
+}
+
 export function readXJsonRoutingFromDocument(
 	raw: unknown,
 	line = 1,
@@ -95,234 +702,6 @@ export function readXJsonRoutingFromDocument(
 	};
 }
 
-interface XJsonDocumentMetadata {
-	kind?: XJsonImportKind;
-	account?: string;
-}
-
-export interface XJsonImportError {
-	line: number;
-	message: string;
-}
-
-export interface XJsonImportResult {
-	imported: number;
-	skipped: number;
-	errors: XJsonImportError[];
-}
-
-type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function readStringField(
-	record: JsonRecord,
-	field: string,
-	line: number,
-	label: string,
-): string | { error: string } {
-	const value = record[field];
-	if (typeof value !== "string" || value.trim().length === 0) {
-		return {
-			error: `Line ${String(line)}: ${label} must be a non-empty string`,
-		};
-	}
-	return value.trim();
-}
-
-function normalizeBotTweetFields(record: JsonRecord) {
-	if (
-		Array.isArray(record.edit_history_post_ids) &&
-		record.edit_history_tweet_ids === undefined
-	) {
-		record.edit_history_tweet_ids = record.edit_history_post_ids;
-		delete record.edit_history_post_ids;
-	}
-	const metrics = record.public_metrics;
-	if (isRecord(metrics) && metrics.repost_count !== undefined) {
-		if (metrics.retweet_count === undefined) {
-			metrics.retweet_count = metrics.repost_count;
-		}
-		delete metrics.repost_count;
-	}
-}
-
-function normalizeTweetData(
-	value: unknown,
-	line: number,
-): { tweet: XurlTweetData; sourceUrl?: string } | { error: string } {
-	if (!isRecord(value)) {
-		return { error: `Line ${String(line)}: each data tweet must be an object` };
-	}
-	normalizeBotTweetFields(value);
-	const sourceUrl =
-		typeof value.url === "string" && value.url.trim().length > 0
-			? value.url.trim()
-			: undefined;
-	const { url: _ignored, ...rest } = value;
-	const id = readStringField(rest, "id", line, "tweet.id");
-	if (typeof id !== "string") return id;
-	if (!TWEET_ID_PATTERN.test(id)) {
-		return {
-			error: `Line ${String(line)}: tweet id must be a numeric string (1-20 digits)`,
-		};
-	}
-	const authorId = readStringField(rest, "author_id", line, "tweet.author_id");
-	if (typeof authorId !== "string") return authorId;
-	if (!X_USER_ID_PATTERN.test(authorId)) {
-		return {
-			error: `Line ${String(line)}: tweet.author_id must be a numeric string`,
-		};
-	}
-	const referenced = normalizeReferencedTweets(rest, line);
-	if ("error" in referenced) return referenced;
-	const text = readStringField(rest, "text", line, "tweet.text");
-	if (typeof text !== "string") return text;
-	const createdAt = readStringField(
-		rest,
-		"created_at",
-		line,
-		"tweet.created_at",
-	);
-	if (typeof createdAt !== "string") return createdAt;
-	if (Number.isNaN(Date.parse(createdAt))) {
-		return {
-			error: `Line ${String(line)}: tweet.created_at must be a valid timestamp`,
-		};
-	}
-	return {
-		tweet: rest as unknown as XurlTweetData,
-		sourceUrl,
-	};
-}
-
-function normalizeReferencedTweets(
-	record: JsonRecord,
-	line: number,
-): { ok: true } | { error: string } {
-	const value = record.referenced_tweets;
-	if (value === undefined) return { ok: true };
-	if (!Array.isArray(value)) {
-		return {
-			error: `Line ${String(line)}: tweet.referenced_tweets must be an array`,
-		};
-	}
-	for (const entry of value) {
-		if (!isRecord(entry)) {
-			return {
-				error: `Line ${String(line)}: tweet.referenced_tweets entries must be objects`,
-			};
-		}
-		const type = entry.type;
-		const normalizedType =
-			typeof type === "string" && type === "reposted" ? "retweeted" : type;
-		if (
-			typeof normalizedType !== "string" ||
-			!REFERENCED_TWEET_TYPES.has(normalizedType)
-		) {
-			return {
-				error: `Line ${String(line)}: tweet.referenced_tweets.type must be quoted, replied_to, retweeted, or reposted`,
-			};
-		}
-		if (normalizedType !== type) {
-			entry.type = normalizedType;
-		}
-		const refId = entry.id;
-		if (typeof refId !== "string" || !TWEET_ID_PATTERN.test(refId.trim())) {
-			return {
-				error: `Line ${String(line)}: tweet.referenced_tweets.id must be a numeric string (1-20 digits)`,
-			};
-		}
-	}
-	return { ok: true };
-}
-
-function normalizeUser(
-	value: unknown,
-	line: number,
-): XurlMentionUser | { error: string } {
-	if (!isRecord(value)) {
-		return {
-			error: `Line ${String(line)}: includes.users entries must be objects`,
-		};
-	}
-	const id = readStringField(value, "id", line, "user.id");
-	if (typeof id !== "string") return id;
-	if (!X_USER_ID_PATTERN.test(id)) {
-		return {
-			error: `Line ${String(line)}: user.id must be a numeric string`,
-		};
-	}
-	const username = readStringField(value, "username", line, "user.username");
-	if (typeof username !== "string") return username;
-	const name = readStringField(value, "name", line, "user.name");
-	if (typeof name !== "string") return name;
-	return value as unknown as XurlMentionUser;
-}
-
-function normalizeIncludes(
-	value: unknown,
-	line: number,
-): XurlTweetsResponse["includes"] | { error: string } | undefined {
-	if (value === undefined) return undefined;
-	if (!isRecord(value)) {
-		return { error: `Line ${String(line)}: includes must be an object` };
-	}
-	const includes: XurlTweetsResponse["includes"] = {};
-	if (value.users !== undefined) {
-		if (!Array.isArray(value.users)) {
-			return { error: `Line ${String(line)}: includes.users must be an array` };
-		}
-		const users: XurlMentionUser[] = [];
-		for (const user of value.users) {
-			const normalized = normalizeUser(user, line);
-			if ("error" in normalized) return normalized;
-			users.push(normalized);
-		}
-		includes.users = users;
-	}
-	const nestedTweets = value.tweets ?? value.posts;
-	if (nestedTweets !== undefined) {
-		if (!Array.isArray(nestedTweets)) {
-			return {
-				error: `Line ${String(line)}: includes.tweets must be an array`,
-			};
-		}
-		const tweets: XurlTweetData[] = [];
-		for (const tweet of nestedTweets) {
-			const normalized = normalizeTweetData(tweet, line);
-			if ("error" in normalized) return normalized;
-			tweets.push(normalized.tweet);
-		}
-		includes.tweets = tweets;
-	}
-	if (value.media !== undefined) {
-		if (!Array.isArray(value.media)) {
-			return { error: `Line ${String(line)}: includes.media must be an array` };
-		}
-		for (const item of value.media) {
-			if (!isRecord(item)) {
-				return {
-					error: `Line ${String(line)}: includes.media entries must be objects`,
-				};
-			}
-			const mediaKey = readStringField(
-				item,
-				"media_key",
-				line,
-				"media.media_key",
-			);
-			if (typeof mediaKey !== "string") return mediaKey;
-			const type = readStringField(item, "type", line, "media.type");
-			if (typeof type !== "string") return type;
-		}
-		includes.media = value.media as XurlMedia[];
-	}
-	return includes;
-}
-
 function parseImportKind(
 	value: unknown,
 	line: number,
@@ -331,8 +710,7 @@ function parseImportKind(
 	if (typeof value !== "string") {
 		return { error: `Line ${String(line)}: kind must be a string` };
 	}
-	const normalized = value.trim().toLowerCase();
-	const mapped = X_JSON_KIND_INPUT_ALIASES[normalized];
+	const mapped = X_JSON_KIND_INPUT_ALIASES[value.trim().toLowerCase()];
 	if (!mapped) {
 		return {
 			error: `Line ${String(line)}: kind must be one of ${X_JSON_ACCEPTED_KIND_INPUTS.join(", ")}`,
@@ -409,95 +787,6 @@ function ingestOptionsForKind(kind: XJsonImportKind): {
 	}
 }
 
-function normalizeDocument(
-	raw: unknown,
-	line: number,
-):
-	| { payload: XurlTweetsResponse; sourceUrlByTweetId: Map<string, string> }
-	| { error: string } {
-	if (!isRecord(raw)) {
-		return { error: `Line ${String(line)}: expected a JSON object` };
-	}
-	if (raw.data === undefined) {
-		return { error: `Line ${String(line)}: missing data` };
-	}
-	const dataItems = Array.isArray(raw.data) ? raw.data : [raw.data];
-	if (dataItems.length === 0) {
-		return { error: `Line ${String(line)}: data must not be empty` };
-	}
-	const data: XurlTweetData[] = [];
-	const sourceUrlByTweetId = new Map<string, string>();
-	for (const item of dataItems) {
-		const normalized = normalizeTweetData(item, line);
-		if ("error" in normalized) return normalized;
-		data.push(normalized.tweet);
-		if (normalized.sourceUrl) {
-			sourceUrlByTweetId.set(normalized.tweet.id, normalized.sourceUrl);
-		}
-	}
-	const includes = normalizeIncludes(raw.includes, line);
-	if (includes && "error" in includes) return includes;
-	return {
-		payload: {
-			data,
-			...(includes ? { includes } : {}),
-			...(raw.meta && isRecord(raw.meta) ? { meta: raw.meta } : {}),
-		},
-		sourceUrlByTweetId,
-	};
-}
-
-function splitInputDocuments(input: string): {
-	documents: Array<{ line: number; raw: unknown }>;
-	errors: XJsonImportError[];
-} {
-	if (!input.trim()) {
-		throw new Error("import input is empty");
-	}
-	try {
-		const parsed: unknown = JSON.parse(input.trim());
-		if (isRecord(parsed)) {
-			return { documents: [{ line: 1, raw: parsed }], errors: [] };
-		}
-	} catch {
-		// Fall through to JSONL parsing.
-	}
-	const documents: Array<{ line: number; raw: unknown }> = [];
-	const errors: XJsonImportError[] = [];
-	let lineNumber = 0;
-	for (const line of input.split(/\r?\n/u)) {
-		lineNumber += 1;
-		const slice = line.trim();
-		if (!slice) continue;
-		try {
-			documents.push({ line: lineNumber, raw: JSON.parse(slice) as unknown });
-		} catch {
-			errors.push({
-				line: lineNumber,
-				message: `Line ${String(lineNumber)}: invalid JSON`,
-			});
-		}
-	}
-	if (documents.length === 0 && errors.length === 0) {
-		throw new Error("import input is empty");
-	}
-	return { documents, errors };
-}
-
-function ensurePublicImportAccount(db: Database) {
-	db.prepare(
-		`insert or ignore into accounts (
-      id, name, handle, transport, is_default, created_at
-    ) values (?, 'Public imports', '@public', 'archive', 0, ?)`,
-	).run(PUBLIC_ACCOUNT_ID, new Date().toISOString());
-}
-
-function tweetExists(db: Database, tweetId: string) {
-	return Boolean(
-		db.prepare("select 1 as ok from tweets where id = ?").get(tweetId),
-	);
-}
-
 export function unwrapMarkdownJsonFence(body: string) {
 	const trimmed = body.trim();
 	const fenced = trimmed.match(
@@ -507,118 +796,115 @@ export function unwrapMarkdownJsonFence(body: string) {
 	return trimmed;
 }
 
-function validateDocuments(input: string): {
-	documents: Array<{ line: number; raw: unknown }>;
-	result: XJsonImportResult;
-} {
+function runXJsonDocuments(
+	db: Database | undefined,
+	input: string,
+	mode: "import" | "validate",
+): XJsonImportResult {
 	const result: XJsonImportResult = { imported: 0, skipped: 0, errors: [] };
+	let documents: Array<{ line: number; raw: unknown }>;
 	try {
 		const split = splitInputDocuments(input);
+		documents = split.documents;
 		result.errors.push(...split.errors);
-		return { documents: split.documents, result };
 	} catch (error) {
 		result.errors.push({
 			line: 1,
 			message: error instanceof Error ? error.message : String(error),
 		});
-		return { documents: [], result };
+		return result;
 	}
-}
 
-function processDocument(
-	db: Database | undefined,
-	document: { line: number; raw: unknown },
-	result: XJsonImportResult,
-	mode: "validate" | "import",
-) {
-	if (!isRecord(document.raw)) {
-		result.errors.push({
-			line: document.line,
-			message: `Line ${String(document.line)}: expected a JSON object`,
-		});
-		return;
-	}
-	const extracted = extractDocumentMetadata(document.raw, document.line);
-	if ("error" in extracted) {
-		result.errors.push({ line: document.line, message: extracted.error });
-		return;
-	}
-	if (extracted.metadata.kind && !db) {
-		result.errors.push({
-			line: document.line,
-			message: `Line ${String(document.line)}: kind requires an initialized database to resolve account`,
-		});
-		return;
-	}
-	const accountId = db
-		? resolveImportAccountId(db, extracted.metadata, document.line)
-		: PUBLIC_ACCOUNT_ID;
-	if (typeof accountId !== "string") {
-		result.errors.push({ line: document.line, message: accountId.error });
-		return;
-	}
-	const normalized = normalizeDocument(extracted.body, document.line);
-	if ("error" in normalized) {
-		result.errors.push({ line: document.line, message: normalized.error });
-		return;
-	}
-	const primaryIds = [
-		...new Set(normalized.payload.data.map((tweet) => tweet.id)),
-	];
-	if (mode === "validate") {
-		result.imported += primaryIds.length;
-		return;
-	}
-	const existingCount = primaryIds.filter((id) => tweetExists(db!, id)).length;
-	const newCount = primaryIds.length - existingCount;
-	result.skipped += existingCount;
-	result.imported += newCount;
+	if (mode === "import" && db) ensurePublicImportAccount(db);
 
-	const membership = extracted.metadata.kind
-		? ingestOptionsForKind(extracted.metadata.kind)
-		: { edgeKind: "home" as const };
+	for (const document of documents) {
+		if (!isRecord(document.raw)) {
+			result.errors.push({
+				line: document.line,
+				message: `Line ${String(document.line)}: expected a JSON object`,
+			});
+			continue;
+		}
+		const extracted = extractDocumentMetadata(document.raw, document.line);
+		if ("error" in extracted) {
+			result.errors.push({ line: document.line, message: extracted.error });
+			continue;
+		}
+		if (extracted.metadata.kind && !db) {
+			result.errors.push({
+				line: document.line,
+				message: `Line ${String(document.line)}: kind requires an initialized database to resolve account`,
+			});
+			continue;
+		}
+		const accountId = db
+			? resolveImportAccountId(db, extracted.metadata, document.line)
+			: PUBLIC_ACCOUNT_ID;
+		if (typeof accountId !== "string") {
+			result.errors.push({ line: document.line, message: accountId.error });
+			continue;
+		}
+		const normalized = normalizeDocument(extracted.body, document.line);
+		if ("error" in normalized) {
+			result.errors.push({ line: document.line, message: normalized.error });
+			continue;
+		}
+		const primaryIds = [
+			...new Set(normalized.payload.data.map((tweet) => tweet.id)),
+		];
+		if (mode === "validate") {
+			result.imported += primaryIds.length;
+			continue;
+		}
+		if (!db) continue;
+		try {
+			const existingCount = primaryIds.filter((id) =>
+				tweetExists(db, id),
+			).length;
+			const newCount = primaryIds.length - existingCount;
+			const membership = extracted.metadata.kind
+				? ingestOptionsForKind(extracted.metadata.kind)
+				: { edgeKind: "home" as const };
+			db.transaction(() => {
+				ingestTweetPayload(db, {
+					accountId,
+					payload: payloadForIngest(db, normalized.payload),
+					source: X_JSON_IMPORT_SOURCE,
+					...membership,
+					...(membership.collectionKind
+						? { collectionTweetIds: new Set(primaryIds) }
+						: {}),
+					provenance: normalized.sourceUrlByTweetId.size
+						? { sourceUrlByTweetId: normalized.sourceUrlByTweetId }
+						: undefined,
+				});
+			})();
+			result.skipped += existingCount;
+			result.imported += newCount;
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			result.errors.push({
+				line: document.line,
+				message: `Line ${String(document.line)}: ${detail}`,
+			});
+		}
+	}
 
-	db!.transaction(() => {
-		ingestTweetPayload(db!, {
-			accountId,
-			payload: normalized.payload,
-			source: GROKBOT_SOURCE,
-			...membership,
-			...(membership.collectionKind
-				? { collectionTweetIds: new Set(primaryIds) }
-				: {}),
-			provenance: normalized.sourceUrlByTweetId.size
-				? { sourceUrlByTweetId: normalized.sourceUrlByTweetId }
-				: undefined,
-		});
-	})();
+	return result;
 }
 
 export function validateXJsonText(
 	input: string,
 	db?: Database,
 ): XJsonImportResult {
-	const { documents, result } = validateDocuments(input);
-	for (const document of documents) {
-		processDocument(db, document, result, "validate");
-	}
-	return result;
+	return runXJsonDocuments(db, input, "validate");
 }
 
 export function importXJsonText(
 	db: Database,
 	input: string,
 ): XJsonImportResult {
-	const { documents, result } = validateDocuments(input);
-	if (documents.length === 0) {
-		return result;
-	}
-
-	for (const document of documents) {
-		processDocument(db, document, result, "import");
-	}
-
-	return result;
+	return runXJsonDocuments(db, input, "import");
 }
 
 export async function readXJsonImportInput(path: string) {

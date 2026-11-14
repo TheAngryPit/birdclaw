@@ -43,20 +43,15 @@ Partial refreshes never delete rows, remove relationships, or interpret a missin
 
 The FxTwitter transport supports named public tweet, author-thread, conversation, profile-object, and bounded post-search reads only. It does not expose user timelines/status feeds, followers/following, trends, typeahead, standalone quote/repost products, bulk archival sync, DMs, home timelines, bookmarks, likes, authenticated mentions, private content, or any write.
 
-## Grok Bot / X API v2 JSON import
+## Offline X API v2 JSON import
 
-Import offline X API v2 tweet responses (the `XurlTweetsResponse` shape) without network access or credentials. Each document may use `data` as one tweet object or an array; optional per-tweet `url` values are stored as `tweet_sources` provenance for `source = 'grokbot'`.
+Import tweet payloads already saved as X API v2 responses (`XurlTweetsResponse`) without network access or credentials. Each document may use `data` as one tweet object or an array; optional per-tweet `url` values are stored as `tweet_sources` provenance with `source = 'x-json'`.
 
-Optional document-level fields align imports with `birdclaw sync` membership on your own account (not the legacy `public` home path):
-
-- `kind`: sync step name — `timeline`, `mentions`, `likes`, `bookmarks`, or `authored` (preferred), or the legacy aliases `home`, `bookmark`, `like`, `mention`, `authored`. When omitted, behavior is unchanged: tweets land on the `public` account with a `home` edge (existing GitHub inbox issues keep working).
-- `account`: handle or account id. When `kind` is set, Birdclaw resolves the owning account the same way sync does (`resolveLiveSyncAccount` / default account). Unknown accounts fail with a clear error.
-
-Grok Bot tool JSON is normalized before ingest: `includes.posts` → `includes.tweets`, `edit_history_post_ids` → `edit_history_tweet_ids`, `public_metrics.repost_count` → `retweet_count`, and per-tweet `url` stays provenance. In `referenced_tweets`, `type: "reposted"` is accepted as an alias for `"retweeted"`. Edges and collections use the same `ingestTweetPayload` paths as live sync (`home` / `mention` / `authored` edges; `bookmarks` / `likes` collections).
+Optional document fields select sync membership. `kind` is a sync step (`timeline`, `mentions`, `likes`, `bookmarks`, or `authored`) or a legacy alias (`home`, `bookmark`, `like`, `mention`). `account` is a handle or account id. When `kind` is set, Birdclaw resolves that account the same way sync does. When `kind` is omitted, tweets land on the `public` account with a `home` edge. In `referenced_tweets`, `type: "reposted"` is stored as `retweeted`.
 
 ```bash
-birdclaw import x-json ./exports/grok-tweets.jsonl --json
-cat grok-tweets.jsonl | birdclaw import x-json - --json
+birdclaw import x-json ./exports/tweets.jsonl --json
+cat tweets.jsonl | birdclaw import x-json - --json
 ```
 
 The import path itself does not call X or FxTwitter. Like other data-changing commands, a successful import still runs backup auto-sync when that preference is enabled, which can reconcile Git history and push your configured backup remote. For a strictly offline run with auto-sync disabled for one process:
@@ -67,7 +62,7 @@ BIRDCLAW_BACKUP_AUTO_SYNC=0 birdclaw import x-json ./exports/tweets.jsonl --json
 
 The command prints `{ imported, skipped, errors }`. Malformed JSONL lines are rejected whole; re-importing the same tweet ids is idempotent.
 
-## Grok Bot GitHub issue inbox (Mac)
+## GitHub issue inbox (Mac)
 
 Grok Bots can file tweet JSON into a **private** GitHub repository (one issue per batch). Issue bodies may include the same optional `kind` and `account` fields at the JSON root (inside the fenced block). On a Mac with `gh` already authenticated, Birdclaw can poll that inbox, import each open issue body through the same `x-json` path, comment `{ imported, skipped, errors }` on the issue, and close it only when `errors` is empty. Failed imports stay open, receive a comment, and get the `import-failed` label so they are not retried forever.
 
@@ -129,3 +124,5 @@ BUN=$(./scripts/install-bun-canary.sh)
 ```
 
 `install-x-json-issues-launchd` requires at least one `--author`. The plist records `BIRDCLAW_HOME` and `BIRDCLAW_GH_PATH` so launchd imports into the same home as the log paths.
+
+Imported primary tweets receive a `home` edge on the `public` import account when the document omits `kind`, and those tweets appear in default `search tweets` results. Tweets included only as quoted or referenced context do not receive that edge. Re-importing earlier saved files also adds missing search membership without duplicating tweets. Empty included-user display names fall back to the username, matching shared ingestion. A `kind` of `likes` or `bookmarks` writes a collection on the resolved account. `mentions` and `authored` write those edges on the resolved account.
