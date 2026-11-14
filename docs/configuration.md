@@ -63,20 +63,20 @@ The Playwright test home is `.playwright-home` in the repo, which is why CI neve
 		"dataSource": "bird",
 		"birdCommand": "/Users/steipete/Projects/bird/bird"
 	},
-  "backup": {
-    "repoPath": "/Users/steipete/Projects/backup-birdclaw",
-    "remote": "https://github.com/steipete/backup-birdclaw.git",
-    "autoSync": true,
-    "staleAfterSeconds": 900
-  },
-  "jobs": {
-    "presets": {
-      "evening": {
-        "accountSyncIntervalSeconds": 7200,
-        "bookmarksIntervalSeconds": 21600
-      }
-    }
-  }
+	"backup": {
+		"repoPath": "/Users/steipete/Projects/backup-birdclaw",
+		"remote": "https://github.com/steipete/backup-birdclaw.git",
+		"autoSync": true,
+		"staleAfterSeconds": 900
+	},
+	"jobs": {
+		"presets": {
+			"evening": {
+				"accountSyncIntervalSeconds": 7200,
+				"bookmarksIntervalSeconds": 21600
+			}
+		}
+	}
 }
 ```
 
@@ -144,32 +144,32 @@ See [Backup](backup.md). When `autoSync` is enabled, read commands pull + merge 
 
 ## Environment variables
 
-| Variable                       | Purpose                                                                                                                                              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIRDCLAW_HOME`                | Override the storage root (`~/.birdclaw` by default)                                                                                                 |
-| `AUTH_TOKEN`, `CT0`            | Optional X session cookies for native DM request access (`--mode web`); store them in a protected environment, never command arguments               |
-| `BIRDCLAW_CONFIG`              | Read and write config at a non-default path                                                                                                          |
-| `BIRDCLAW_PREFERRED_TRANSPORT` | Override the global auto transport preference with `bird` or `xurl` |
-| `BIRDCLAW_ACTIONS_TRANSPORT`   | Override moderation action transport with `auto`, `xurl`, or `bird` for one process                                                                  |
-| `BIRDCLAW_BIRD_COMMAND`        | Override the `bird` executable used by live Bird transports                                                                                          |
-| `BIRDCLAW_DIGEST_LIVE_MODE`    | Default `today`/`digest` home-timeline transport (`auto`, `bird`, or `xurl`); `auto` with a transport preference, otherwise `xurl`, when unset or invalid. CLI `--live-mode` and API `liveSyncMode` override it |
-| `BIRDCLAW_BASH_COMMAND`        | Override the Git Bash executable used for Bird subprocess redirection on Windows                                                                     |
-| `BIRDCLAW_HOST`                | Host interface for the production `birdclaw serve` listener; defaults to `127.0.0.1`                                                                 |
-| `BIRDCLAW_PORT`                | Port for the production `birdclaw serve` listener; defaults to `3000`                                                                                |
-| `BIRDCLAW_ALLOWED_HOSTS`       | Comma-separated extra hostnames accepted by the source `./scripts/bun-canary.sh run --bun dev` server                                                                             |
-| `BIRDCLAW_LOCAL_WEB`           | Internal local-server mode; production derives local access from the peer socket, while forwarded/proxied requests still require remote-token config |
-| `BIRDCLAW_WEB_TOKEN`           | Optional app-level token for remote web API access; send as `x-birdclaw-token` or `birdclaw_token`                                                   |
-| `BIRDCLAW_ALLOW_REMOTE_WEB`    | Set to `1` to allow remote access through a trusted private proxy                                                                                    |
-| `BIRDCLAW_MCP_TOKEN`           | Dedicated 32+ byte bearer secret required by the read-only `/mcp` endpoint                                                                            |
-| `BIRDCLAW_MCP_PUBLIC_URL`      | Exact public MCP URL, including `/mcp`; enables strict Host/Origin checks but does not terminate TLS                                                   |
-| `BIRDCLAW_DISABLE_LIVE_WRITES` | Set to `1` to block any live mutation (used by tests and CI)                                                                                         |
-| `BIRDCLAW_DEPLOYMENT_READ_ONLY` | Set to `1` before starting an archive server to allow only cached reads, disable mutations and automatic sync, and use the existing database without initialization or migrations |
-| `BIRDCLAW_BACKUP_AUTO_SYNC`    | Set to `0` to disable auto-sync for one process                                                                                                      |
-| `NO_COLOR`                     | Disable ANSI color in human output                                                                                                                   |
-| `OPENAI_API_KEY`               | Enable inbox scoring and low-signal filtering                                                                                                        |
-| `BIRDCLAW_OPENAI_MODEL`        | Override the model used for inbox scoring (default `gpt-5.2`)                                                                                        |
-| `BIRDCLAW_OPENAI_BASE_URL`     | Point at an OpenAI-compatible server (e.g. Ollama `http://localhost:11434/v1`); takes precedence over the compatible `OPENAI_BASE_URL` fallback; default `https://api.openai.com/v1` |
-| `BIRDCLAW_DEBUG`               | Set to any value to log OpenAI request URLs, statuses, and error bodies to stderr                                                                   |
+| Variable                        | Purpose                                                                                                                                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BIRDCLAW_HOME`                 | Override the storage root (`~/.birdclaw` by default)                                                                                                                                                            |
+| `AUTH_TOKEN`, `CT0`             | Optional X session cookies for native DM request access (`--mode web`); store them in a protected environment, never command arguments                                                                          |
+| `BIRDCLAW_CONFIG`               | Read and write config at a non-default path                                                                                                                                                                     |
+| `BIRDCLAW_PREFERRED_TRANSPORT`  | Override the global auto transport preference with `bird` or `xurl`                                                                                                                                             |
+| `BIRDCLAW_ACTIONS_TRANSPORT`    | Override moderation action transport with `auto`, `xurl`, or `bird` for one process                                                                                                                             |
+| `BIRDCLAW_BIRD_COMMAND`         | Override the `bird` executable used by live Bird transports                                                                                                                                                     |
+| `BIRDCLAW_DIGEST_LIVE_MODE`     | Default `today`/`digest` home-timeline transport (`auto`, `bird`, or `xurl`); `auto` with a transport preference, otherwise `xurl`, when unset or invalid. CLI `--live-mode` and API `liveSyncMode` override it |
+| `BIRDCLAW_BASH_COMMAND`         | Override the Git Bash executable used for Bird subprocess redirection on Windows                                                                                                                                |
+| `BIRDCLAW_HOST`                 | Host interface for the production `birdclaw serve` listener; defaults to `127.0.0.1`                                                                                                                            |
+| `BIRDCLAW_PORT`                 | Port for the production `birdclaw serve` listener; defaults to `3000`                                                                                                                                           |
+| `BIRDCLAW_ALLOWED_HOSTS`        | Comma-separated extra hostnames accepted by the source `./scripts/bun-canary.sh run --bun dev` server                                                                                                           |
+| `BIRDCLAW_LOCAL_WEB`            | Internal local-server mode; production derives local access from the peer socket, while forwarded/proxied requests still require remote-token config                                                            |
+| `BIRDCLAW_WEB_TOKEN`            | Optional app-level token for remote web API access; send as `x-birdclaw-token` or `birdclaw_token`                                                                                                              |
+| `BIRDCLAW_ALLOW_REMOTE_WEB`     | Set to `1` to allow remote access through a trusted private proxy                                                                                                                                               |
+| `BIRDCLAW_MCP_TOKEN`            | Dedicated 32+ byte bearer secret required by the read-only `/mcp` endpoint                                                                                                                                      |
+| `BIRDCLAW_MCP_PUBLIC_URL`       | Exact public MCP URL, including `/mcp`; enables strict Host/Origin checks but does not terminate TLS                                                                                                            |
+| `BIRDCLAW_DISABLE_LIVE_WRITES`  | Set to `1` to block any live mutation (used by tests and CI)                                                                                                                                                    |
+| `BIRDCLAW_DEPLOYMENT_READ_ONLY` | Set to `1` before starting an archive server to allow only cached reads, disable mutations and automatic sync, and use the existing database without initialization or migrations                               |
+| `BIRDCLAW_BACKUP_AUTO_SYNC`     | Set to `0` to disable auto-sync for one process                                                                                                                                                                 |
+| `NO_COLOR`                      | Disable ANSI color in human output                                                                                                                                                                              |
+| `OPENAI_API_KEY`                | Enable inbox scoring and low-signal filtering                                                                                                                                                                   |
+| `BIRDCLAW_OPENAI_MODEL`         | Override the model used for inbox scoring (default `gpt-5.2`)                                                                                                                                                   |
+| `BIRDCLAW_OPENAI_BASE_URL`      | Point at an OpenAI-compatible server (e.g. Ollama `http://localhost:11434/v1`); takes precedence over the compatible `OPENAI_BASE_URL` fallback; default `https://api.openai.com/v1`                            |
+| `BIRDCLAW_DEBUG`                | Set to any value to log OpenAI request URLs, statuses, and error bodies to stderr                                                                                                                               |
 
 `BIRDCLAW_DISABLE_LIVE_WRITES=1` is set automatically in CI and Playwright runs so test code can never publish a tweet, send a DM, or block an account.
 
@@ -221,6 +221,8 @@ external data commit; normal writable deployments continue to read fresh counts.
 The status API includes `readOnly: true`, and the web app hides writing controls,
 automatic sync timers, and pages that require live fetching or generation. The
 existing read-only MCP endpoint remains available when separately configured.
+
+CLI analysis reads follow the same boundary: `whois` uses the prepared identity index, and digest/profile analysis can return usable cached reports. Cache misses fail without live collection, generation, or writes. Explicit digest refresh requires a writable deployment.
 Without this environment variable, normal behavior is unchanged.
 
 This mode does not authenticate visitors, isolate accounts, or change the
